@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  body{width:540px;margin:0;padding:10px;font:13px/1.5 system-ui,"Microsoft YaHei",sans-serif}
+  button{margin:0 6px 6px 0;padding:5px 10px;cursor:pointer}
+  #msg{color:#15803d;min-height:1.5em}
+  #sum{margin:4px 0}
+  .warn{color:#b91c1c}
+  .ok{color:#15803d}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th,td{border:1px solid #d1d5db;padding:2px 5px;text-align:left;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+  th{background:#f3f4f6}
+  tr.miss td:nth-child(2){background:#fee2e2}
+  #wrap{max-height:300px;overflow:auto}
+  details{margin:6px 0;padding:4px 8px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px}
+  summary{cursor:pointer}
+  ol{margin:4px 0 4px 18px;padding:0}
+</style>
+</head>
+<body>
+  <div>
+    <button id="copyA">① 复制 A 列（整块）</button>
+    <button id="copyF">② 复制 F 列（链接）</button>
+    <button id="grant" style="display:none">授权访问网站</button>
+    <button id="reload">重新读取</button>
+  </div>
+  <div id="msg"></div>
+  <div style="color:#6b7280;font-size:12px">分两次粘贴：① 粘到 A 列起始格，② 粘到 F 列起始格（B～E 不会被覆盖）</div>
+  <div id="sum"></div>
+  <pre id="err" style="color:#b91c1c;font-size:11px;white-space:pre-wrap;margin:2px 0"></pre>
+  <div id="wrap"><table><thead><tr><th>#</th><th>总帧数</th><th>data_id</th><th>任务名称</th></tr></thead><tbody id="tb"></tbody></table></div>
+  <script src="popup.js"></script>
+</body>
+</html>
