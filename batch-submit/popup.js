@@ -102,38 +102,33 @@ function matches(tab, form) {
   return !!form.host && u.hostname.toLowerCase().includes(form.host);
 }
 
-// 页面现在有没有顶栏「提交」按钮:true 有 / false 没有(主页等)/ null 看不了(休眠中、还在加载)
-async function hasTopButton(tab) {
-  if (tab.discarded || tab.status !== 'complete') return null;
-  try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['inject.js'] });
-    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.__bs.probe() });
-    return typeof r?.result === 'boolean' ? r.result : null;
-  } catch { return null; }
+// 任务页的网址是 …/editor?…,主页是 …/operator/home。只有任务页才处理
+const isTaskPage = tab => new URL(tab.url).pathname.startsWith('/editor');
+
+// 标签页标题都是「LabelWise 标注平台」分不出来,所以用网址里的 task_name 当名字
+function tabName(tab) {
+  try { return new URL(tab.url).searchParams.get('task_name') || tab.title; }
+  catch { return tab.title; }
 }
 
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
-// 没有顶栏「提交」按钮的(主页等)先排除掉,不占「最多处理」的名额;看不了的留着,交给后台加载后再判断
+// 不是任务页的(主页等)先排除掉,不占「最多处理」的名额
 async function getTargets(form) {
   const all = (await chrome.tabs.query(tabQuery(form.scope))).filter(t => matches(t, form));
   all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));
-  const has = await Promise.all(all.map(hasTopButton));
-  const tasks = all.filter((t, i) => has[i] !== false);
+  const tasks = all.filter(isTaskPage);
   const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;
   return { all, tasks, picked };
 }
 
-let countSeq = 0; // 表单改得快时,只显示最后一次统计的结果
 async function refreshCount() {
   const form = readForm();
   if (!form.anyHost && !form.host) { el.count.textContent = '先填域名,或勾选「所有网站」'; return; }
-  const seq = ++countSeq;
   const { all, tasks, picked } = await getTargets(form);
-  if (seq !== countSeq) return;
   const other = all.length - tasks.length;
   el.count.textContent = `匹配到 ${all.length} 个标签页` +
-    (other ? `,其中 ${other} 个没有顶栏「提交」按钮(主页等),不处理` : '') +
+    (other ? `,其中 ${other} 个不是任务页(主页等),不处理` : '') +
     `;本次处理 ${picked.length} 个`;
 }
 
@@ -143,7 +138,7 @@ async function retryTargets() {
   const out = [];
   for (const it of items) {
     const tab = await chrome.tabs.get(it.tabId).catch(() => null);
-    if (tab) out.push({ id: tab.id, title: tab.title || it.title });
+    if (tab) out.push({ id: tab.id, title: tabName(tab) || it.title });
   }
   return out;
 }
@@ -184,7 +179,7 @@ async function launch(key, targets) {
     const r = await chrome.runtime.sendMessage({
       type: 'START',
       options: { dryRun: form.dryRun, concurrency: form.concurrency },
-      tabs: targets.map(t => ({ id: t.id, title: t.title || '(无标题)' })),
+      tabs: targets.map(t => ({ id: t.id, title: tabName(t) || '(无标题)' })),
     });
     if (r && r.ok === false) setHint(r.error || '启动失败');
   } catch (e) {

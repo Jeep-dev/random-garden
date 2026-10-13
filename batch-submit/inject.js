@@ -25,7 +25,7 @@
     T: { page: 30000, tag: 8000, dialog: 30000, option: 4000, value: 8000, final: 30000 },
   };
 
-  const bs = (window.__bs = { running: false, abort: false, locked: false, run, probe });
+  const bs = (window.__bs = { running: false, abort: false, locked: false, run });
 
   /* ---------------- 小工具 ---------------- */
 
@@ -92,8 +92,6 @@
     [...scope.querySelectorAll('button, [role="button"], .ant-btn')].find(
       b => norm(b.textContent) === norm(text) && isVisible(b) && !(outside && b.closest(outside))
     ) || null;
-
-  const findTop = () => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' });
 
   const visibleDialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(isVisible);
   const findDialog = text => visibleDialogs().find(d => norm(d.textContent).includes(norm(text))) || null;
@@ -167,7 +165,8 @@
     step('等待页面加载…');
     let topBtn;
     try {
-      topBtn = await waitFor(findTop, { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
+      topBtn = await waitFor(() => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' }),
+        { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
     } catch (e) {
       if (e.message === '__abort') throw e;
       return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };
@@ -245,9 +244,6 @@
     if (home) realClick(home);
     return home ? done : { ...done, message: '已提交成功(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
   }
-
-  // 给 popup 用:页面现在有没有顶栏「提交」按钮。主页之类没有的,不算要处理的任务页
-  function probe() { return !!findTop(); }
 
   async function run(opts) {
     if (bs.running) return { status: 'skipped', message: '这个标签页正在运行中' };

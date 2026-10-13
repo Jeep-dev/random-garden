@@ -23,7 +23,7 @@
   ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
   li { padding: 4px 8px; margin-bottom: 3px; border-radius: 6px; background: #232a33; cursor: pointer; display: grid; grid-template-columns: 52px 1fr; gap: 6px; }
   li small { grid-column: 2; color: #98a2b3; word-break: break-all; }
-  li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .t { word-break: break-all; }
   li.error .s { color: #ff6b6f; } li.unknown .s, li.skipped .s { color: #f2b84b; }
   li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 </style>
