@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.2.4。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.3.0。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,13 +53,13 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.2.4",
-  "description": "在标注平台的多个标签页里批量执行提交流程(提交 → 质检通过 → 确认提交 → 返回主页)",
+  "version": "0.3.0",
+  "description": "在标注平台的多个任务标签页中批量执行提交流程:提交 → 选择「质检通过」→ 确认提交 → 返回主页",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "批量提交" }
+  "action": { "default_popup": "popup.html", "default_title": "批量提交助手" }
 }
 ```
 
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.2.4"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.3.0"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -90,14 +90,14 @@ HTML 负责"有哪些控件",CSS(`<style>` 里)负责"长什么样"。
 <html lang="zh-CN">                  <!-- 根标签,语言是简体中文 -->
 <head>                               <!-- 头部:放不显示的信息 -->
 <meta charset="utf-8">               <!-- 用 UTF-8 编码,中文才不乱码 -->
-<title>批量提交</title>               <!-- 页面标题 -->
+<title>批量提交助手</title>               <!-- 页面标题 -->
 <style>                              <!-- 下面是 CSS 样式 -->
 ```
 
 ### 2.2 CSS 样式(逐行)
 
 ```css
-/* 让浏览器把表单控件(下拉框、复选框)也画成深色风格,配合深色背景 */
+/* 让浏览器把表单控件(复选框、数字框)也画成深色风格,配合深色背景 */
 :root { color-scheme: dark; }
 
 /* body = 整个页面:宽 380 像素,外边距 0,内边距上12/左右14/下14;
@@ -117,8 +117,8 @@ h1 { margin: 0 0 10px; font-size: 15px; }
 /* .dim = 次要文字,用灰色 */
 .dim { color: #98a2b3; }
 
-/* 下拉框、数字框、文本框:深色背景、继承文字颜色、细边框、圆角 6px、内边距、继承字体 */
-select, input[type="number"], input[type="text"] { background: #11141a; color: inherit; border: 1px solid #2c333d; border-radius: 6px; padding: 2px 6px; font: inherit; }
+/* 数字框、文本框:深色背景、继承文字颜色、细边框、圆角 6px、内边距、继承字体 */
+input[type="number"], input[type="text"] { background: #11141a; color: inherit; border: 1px solid #2c333d; border-radius: 6px; padding: 2px 6px; font: inherit; }
 
 /* 数字框宽度固定 56px */
 input[type="number"] { width: 56px; }
@@ -126,13 +126,10 @@ input[type="number"] { width: 56px; }
 /* 文本框占满一行剩余空间(flex:1),min-width:0 防止被内容撑破 */
 input[type="text"] { flex: 1; min-width: 0; }
 
-/* 小按钮:更小的内边距和字号 */
-button.small { padding: 2px 8px; font-size: 12px; }
-
 /* 普通按钮:细边框、透明背景、圆角、鼠标移上去变手形、继承字体 */
 button { border: 1px solid #2c333d; background: transparent; color: inherit; border-radius: 6px; padding: 5px 14px; cursor: pointer; font: inherit; }
 
-/* 主按钮(开始):蓝底白字 */
+/* 主按钮(开始执行):蓝底白字 */
 button.primary { background: #2f8cff; border-color: #2f8cff; color: #fff; }
 
 /* 被禁用的按钮:半透明,鼠标移上去显示"禁止"图标 */
@@ -147,8 +144,8 @@ progress { width: 100%; height: 8px; margin: 6px 0; }
 /* 列表:去掉圆点,无边距,最高 260px,超出部分出现竖向滚动条 */
 ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
 
-/* 列表项:一张"卡片"。网格布局两列:左边 52px 放状态,右边放标题;可点击 */
-li { padding: 4px 8px; margin-bottom: 3px; border-radius: 6px; background: #232a33; cursor: pointer; display: grid; grid-template-columns: 52px 1fr; gap: 6px; }
+/* 列表项:一张"卡片"。网格布局两列:左边 60px 放状态,右边放任务名;可点击 */
+li { padding: 4px 8px; margin-bottom: 3px; border-radius: 6px; background: #232a33; cursor: pointer; display: grid; grid-template-columns: 60px 1fr; gap: 6px; }
 
 /* 卡片里的小字(报错信息):放第 2 列(标题下方),灰色,允许任意位置换行 */
 li small { grid-column: 2; color: #98a2b3; word-break: break-all; }
@@ -156,7 +153,7 @@ li small { grid-column: 2; color: #98a2b3; word-break: break-all; }
 /* 标题(.t):任务名很长、前半段都一样,所以不截断,允许任意位置换行,保证能看到最后的编号 */
 li .t { word-break: break-all; }
 
-/* 状态文字(.s)按状态上色:失败=红;未知/跳过=黄;成功/可提交=绿;进行中=蓝 */
+/* 状态文字(.s)按状态上色:失败=红;待确认/已跳过=黄;成功/预检通过=绿;处理中=蓝 */
 li.error .s { color: #ff6b6f; } li.unknown .s, li.skipped .s { color: #f2b84b; }
 li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 ```
@@ -169,49 +166,33 @@ li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 <body>                                         <!-- 主体:真正显示的内容 -->
   <h1>批量提交助手</h1>                         <!-- 大标题 -->
 
-  <!-- 复选框 id="dry":勾上 = 试运行(走到最后一步但不真提交) -->
-  <label class="row"><input type="checkbox" id="dry"> 试运行(走到最后一步,不点最终「提交」)</label>
-
-  <div class="row">域名包含
-    <!-- 文本框 id="host":填域名,只处理网址里含这段文字的标签页 -->
-    <input type="text" id="host" placeholder="例如 example.com" spellcheck="false" autocomplete="off">
-    <!-- 按钮 id="fillHost":点一下自动填入当前所在标签页的域名 -->
-    <button id="fillHost" class="small" title="取当前所在标签页的域名">取当前页</button>
+  <!-- 文本框 id="host":域名筛选。留空 = 全部域名;填了只处理域名里含这段文字的标签页 -->
+  <div class="row">域名筛选 <input type="text" id="host" placeholder="留空表示全部域名" spellcheck="false" autocomplete="off"></div>
+  <div class="row">
+    <!-- 数字框 id="limit":处理上限,0 表示不限,范围 0~500 -->
+    处理上限 <input type="number" id="limit" min="0" max="500"><span class="dim">(0 表示不限)</span>
+    <!-- 数字框 id="concurrency":并发数(同时处理几个标签页),范围 1~10 -->
+    并发数 <input type="number" id="concurrency" min="1" max="10">
   </div>
-
-  <!-- 复选框 id="anyHost":勾上 = 不限域名,所有网站的标签页都算 -->
-  <label class="row"><input type="checkbox" id="anyHost"> 所有网站的标签页(不限域名)</label>
-
-  <div class="row">范围
-    <select id="scope">                         <!-- 下拉框:在哪些窗口里找标签页 -->
-      <option value="window">当前窗口</option>     <!-- 只找你当前这个浏览器窗口 -->
-      <option value="selected">选中的标签页</option> <!-- 只找你按住 Ctrl/Shift 选中的 -->
-      <option value="all">所有标签页</option>      <!-- 所有窗口里的标签页 -->
-    </select>
-    <!-- 数字框 id="limit":最多处理几个,0 表示不限,范围 0~500 -->
-    最多处理 <input type="number" id="limit" min="0" max="500"> 个 <span class="dim">(0 = 不限)</span>
-  </div>
-
-  <!-- 数字框 id="concurrency":同时开几个标签页处理,范围 1~10 -->
-  <div class="row">同时处理 <input type="number" id="concurrency" min="1" max="10"> 个标签页</div>
-
-  <!-- id="count":显示"匹配到 X 个标签页,本次处理 Y 个",由 popup.js 填写 -->
-  <div class="row dim" id="count">正在统计标签页…</div>
+  <!-- 复选框 id="dry":勾上 = 试运行(走到最后一步但不真提交)。每次打开都不勾选 -->
+  <label class="row"><input type="checkbox" id="dry"> 试运行模式(执行至最终提交前停止,不实际提交)</label>
+  <!-- id="count":显示"检测到 X 个任务页,本次将处理 Y 个",由 popup.js 填写 -->
+  <div class="row dim" id="count">正在检测任务页</div>
 
   <div class="row">
-    <button id="start" class="primary">开始</button>   <!-- 开始按钮 -->
-    <!-- 重跑失败项:默认隐藏(hidden),有可重跑的才显示 -->
-    <button id="retry" hidden title="只重跑提交之前出错的标签页(提交之后出错、结果未知的不会重跑)">重跑失败项</button>
+    <button id="start" class="primary">开始执行</button>   <!-- 开始按钮,点了扩展窗口立刻关闭 -->
+    <!-- 重试失败项:默认隐藏(hidden),有可重试的才显示 -->
+    <button id="retry" hidden title="仅重试最终提交前失败的标签页;提交后失败或待确认的不会重试">重试失败项</button>
     <button id="stop" hidden>停止</button>              <!-- 停止:只在运行中显示 -->
-    <button id="clear">清除记录</button>                <!-- 清除上次运行的记录 -->
+    <button id="clear">清空记录</button>                <!-- 清空上次运行的记录 -->
   </div>
 
-  <div class="dim" id="hint"></div>             <!-- 提示文字(比如"真实提交不可撤销") -->
+  <div class="dim" id="hint"></div>             <!-- 提示文字(比如"未检测到任务页") -->
 
   <hr>                                          <!-- 分隔线 -->
-  <div id="summary" class="dim">还没有运行记录</div>   <!-- 汇总:如 3/10 · 成功 3 -->
-  <progress id="bar" value="0" max="1"></progress>    <!-- 进度条 -->
-  <ul id="list"></ul>                           <!-- 每个标签页一行的结果列表,由 popup.js 动态生成 -->
+  <div id="summary" class="dim">暂无执行记录</div>     <!-- 汇总:如 进度 3/10 · 成功 3 -->
+  <progress id="bar" value="0" max="1"></progress>    <!-- 进度条,没有运行记录时隐藏 -->
+  <ul id="list"></ul>                           <!-- 每个任务一行的结果列表,由 popup.js 动态生成 -->
 
   <script src="popup.js"></script>              <!-- 最后加载 popup.js,让它能找到上面所有 id 的控件 -->
 </body>
@@ -221,6 +202,7 @@ li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 > 为什么 `<script>` 放最后?因为 JS 一加载就要去找 `id="dry"` 这些控件,放最后才能保证控件已经存在。
 
 ---
+
 ## 3. background.js —— 后台总指挥
 
 它的职责:接收弹窗的"开始/停止"指令 → 安排多个标签页同时处理 → 收集每个页面汇报的进度和结果 → 把状态存起来给弹窗显示。
@@ -299,22 +281,22 @@ function setItem(item, patch) {              // 修改某个标签页记录的�
 ```js
 /* ---------- 后台被浏览器回收后的善后 ---------- */
 // 后台脚本空闲太久会被浏览器杀掉。如果杀掉时还有任务在跑,重启后我们不知道结果,
-// 必须诚实地标成「未知」,绝不能当成功或失败,更不能自动重试。
+// 必须诚实地标成「待确认」,绝不能当成功或失败,更不能自动重试。
 (async function recover() {                  // 定义一个异步函数并立刻执行(后台脚本每次启动都会跑一次)
   const { run: saved } = await chrome.storage.session.get('run');  // 从存储里取出上次保存的 run,叫它 saved
   // 没必要善后的情况:内存里已有 run(说明这次启动是为了开始新任务)/ 存储里没有 / 存的状态不是"运行中"
   if (run || !saved || saved.state !== 'running') return;
   for (const it of saved.items) {            // 逐个检查上次的标签页记录
     if (it.status === 'running') {           // 当时正在处理的:不知道到底提交没有
-      it.status = 'unknown';                 // 诚实地标成"未知"
-      it.message = '后台脚本被浏览器重启,不确定是否已提交。请到该标签页手动确认,不要重试';
+      it.status = 'unknown';                 // 诚实地标成"待确认"
+      it.message = '扩展后台进程被浏览器重启,提交状态未知。请人工核实,切勿重复提交';
     } else if (it.status === 'pending') {    // 还在排队、没开始的:肯定没动过
-      it.status = 'skipped';                 // 标成"跳过"
-      it.message = '后台脚本被浏览器重启,没有处理';
+      it.status = 'skipped';                 // 标成"已跳过"
+      it.message = '扩展后台进程被浏览器重启,未处理';
     }
   }
   saved.state = 'stopped';                   // 整次运行标为"已停止"
-  saved.note = '后台被重启,已中断';
+  saved.note = '后台进程重启,任务已中断';
   run = saved;                               // 把它装进内存里的 run
   await save();                              // 并保存
 })();
@@ -355,17 +337,17 @@ async function ensureLoaded(tabId) {
 
 async function processItem(item, options) {  // item = 这个标签页的记录;options = {dryRun, concurrency}
   const tabId = item.tabId;                  // 取出标签页 id
-  await setItem(item, { status: 'running', message: '准备中…' });   // 标记为"进行中"并保存,弹窗立刻能看到
+  await setItem(item, { status: 'running', message: '准备中' });   // 标记为"进行中"并保存,弹窗立刻能看到
 
   let tab;
   try { tab = await chrome.tabs.get(tabId); }   // 尝试获取标签页
-  catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }  // 获取失败 = 已被关掉,标"跳过"并结束
+  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }  // 获取失败 = 已被关掉,标"已跳过"并结束
   if (!/^https?:/i.test(tab.url || '')) {    // 网址不是 http/https 开头(比如 edge:// 内置页)
-    return setItem(item, { status: 'skipped', message: '不是普通网页,无法操作' });  // 注入不了,跳过
+    return setItem(item, { status: 'skipped', message: '非网页标签页,无法处理' });  // 注入不了,跳过
   }
 
   try { await ensureLoaded(tabId); }         // 确保标签页加载好
-  catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }  // 加载期间被关了,跳过
+  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }  // 加载期间被关了,跳过
 
   // 为这个标签页准备一个"等待记录":finalClicked 记录页面是否已点过最终提交;resolve 是收到成功结果时要调用的函数
   const waiter = { finalClicked: false, resolve: null };
@@ -392,24 +374,24 @@ async function processItem(item, options) {  // item = 这个标签页的记录;
   let res = await Promise.race([resultMsg, injected, watchdog]);
   waiters.delete(tabId);                     // 赛跑结束,删掉等待记录
 
-  // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「未知」
+  // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「待确认」
   const after = waiter.finalClicked;         // 是否已点过最终提交
   // 如果:没结果 / 是错误 / 是超时 / 状态不在"最终态"里 —— 说明没拿到明确结论
   if (!res || res.__error || res.__watchdog || !TERMINAL.has(res.status)) {
     let why;                                 // 原因文字
-    if (!res) why = '页面中途跳转或被关闭,没有拿到结果';
-    else if (res.__watchdog) why = '处理超过 ' + TAB_WATCHDOG_MS / 60000 + ' 分钟,放弃等待';
+    if (!res) why = '页面在处理过程中跳转或关闭,未获取到结果';
+    else if (res.__watchdog) why = '处理超时(超过 ' + TAB_WATCHDOG_MS / 60000 + ' 分钟)';
     else if (res.__error) why = res.__error;
-    else why = '页面返回了无法识别的结果';
+    else why = '页面返回结果无法识别';
     res = after                              // 关键判断:
-      ? { status: 'unknown', afterFinal: true, message: why + '。已点过最终提交,请手动确认,不要重试' }  // 点过最终提交 → 未知(不能重试!)
-      : { status: 'error', message: why };   // 还没点最终提交 → 普通失败(可以重跑)
+      ? { status: 'unknown', afterFinal: true, message: why + '。已执行最终提交,请人工核实提交状态,切勿重复提交' }  // 点过最终提交 → 待确认(不能重试!)
+      : { status: 'error', message: why };   // 还没点最终提交 → 普通失败(可以重试)
   }
   await setItem(item, { status: res.status, message: res.message || '', afterFinal: !!res.afterFinal });  // 把最终结果存下来
 }
 ```
 
-> **为什么"点过最终提交后没结果"必须标未知,而不是失败?** 因为提交可能已经成功只是页面没来得及告诉我们。若标成失败并允许重跑,可能造成**重复提交**。
+> **为什么"点过最终提交后没结果"必须标待确认,而不是失败?** 因为提交可能已经成功只是页面没来得及告诉我们。若标成失败并允许重试,可能造成**重复提交**。
 
 ### 3.7 一次运行
 
@@ -431,10 +413,10 @@ async function startRun({ options, tabs }) { // 参数是弹窗发来的 START �
     while (!stopRequested && queue.length) { // 没人叫停且队列还有活
       const item = queue.shift();            // 取出队首(取走后别的工人就拿不到它了,避免重复处理)
       await processItem(item, options);      // 处理这个标签页,等它完成
-      if (item.status === 'error' || item.status === 'unknown') {   // 失败或未知
+      if (item.status === 'error' || item.status === 'unknown') {   // 失败或待确认
         if (++fails >= MAX_CONSECUTIVE_FAILS) {   // 连续失败计数+1,达到 3 次就熔断
           stopRequested = true;              // 叫停所有工人
-          stopReason = '连续 ' + MAX_CONSECUTIVE_FAILS + ' 个失败,已自动停止';
+          stopReason = '连续 ' + MAX_CONSECUTIVE_FAILS + ' 项失败,已自动终止';
         }
       } else if (item.status === 'success' || item.status === 'ready') {
         fails = 0;                           // 成功一个,连续失败计数清零
@@ -447,7 +429,7 @@ async function startRun({ options, tabs }) { // 参数是弹窗发来的 START �
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
 
   for (const it of items) {                  // 所有工人收工后,还在 pending 的就是没被处理的
-    if (it.status === 'pending') { it.status = 'skipped'; it.message = stopReason || '已停止,没有处理'; }
+    if (it.status === 'pending') { it.status = 'skipped'; it.message = stopReason || '已停止,未处理'; }
   }
   run.state = stopRequested ? 'stopped' : 'done';   // 有人叫停 → stopped,否则 → done
   run.note = stopReason;
@@ -485,10 +467,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;    // 消息不是对象就不理
 
   if (msg.type === 'START') {                // 来自弹窗:开始
-    if (run && run.state === 'running') { sendResponse({ ok: false, error: '已经有任务在运行' }); return; }  // 已有任务在跑,拒绝
+    if (run && run.state === 'running') { sendResponse({ ok: false, error: '已有任务正在执行' }); return; }  // 已有任务在跑,拒绝
     sendResponse({ ok: true });              // 先回复"收到"(不等任务做完,否则弹窗要一直等)
     startRun(msg).catch(async e => {         // 开始运行;如果运行过程抛出意外错误:
-      if (run) { run.state = 'stopped'; run.note = '后台出错:' + e.message; stopKeepAlive(); await save(); }
+      if (run) { run.state = 'stopped'; run.note = '后台异常:' + e.message; stopKeepAlive(); await save(); }
     });
     return;
   }
@@ -722,7 +704,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 1. 新出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
     const other = visibleDialogs().find(d => !before.includes(d) &&   // 点提交前就开着的不算
       d !== confirmDialog && !d.contains(confirmDialog) && !confirmDialog.contains(d));   // 排除确认弹窗自己及它的父/子元素
-    if (other) return '出现了另一个弹窗:' + dialogText(other);
+    if (other) return '出现非预期弹窗:' + dialogText(other);
 
     // 2. 顶部提示 / 通知(antd 的 message 和 notification)
     for (const t of document.querySelectorAll('.ant-message-notice, .ant-notification-notice')) {
@@ -748,7 +730,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);   // 发给后台,但最多等 3 秒
     const home = findButton(CFG.HOME_BTN, { scope: findSuccess() || document });   // 找"返回主页领取新任务"
     if (home) realClick(home);                       // 点它,页面会跳转
-    return home ? done : { ...done, message: message + '(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
+    return home ? done : { ...done, message: message + '(未找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
   }
 ```
 
@@ -763,7 +745,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const T = CFG.T;                                 // 各步骤超时时间
 
     // 0. 前置检查:找不到顶栏提交按钮 / 不是「任务有效」状态,就什么都不动
-    step('等待页面加载…');                            // 汇报进度
+    step('等待页面加载');                            // 汇报进度
     let topBtn;
     try {
       // 等顶栏"提交"按钮出现(排除弹窗里的同名按钮)
@@ -771,13 +753,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
     } catch (e) {
       if (e.message === '__abort') throw e;          // 如果是被中止,继续往外抛
-      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };   // 否则跳过
+      return { status: 'skipped', message: '未检测到顶栏「' + CFG.TOP_BTN + '」按钮(非任务页或页面未加载完成)' };   // 否则跳过
     }
 
     // 页面上还开着成功弹窗 = 之前已经提交成功了(比如上次被误判成失败),绝不能再提交一次
     if (findSuccess()) {
-      if (dryRun) return { status: 'skipped', message: '之前已经提交成功(试运行,没有点任何东西)' };   // 试运行不点任何东西
-      return goHome('之前已经提交成功,这次只点了「' + CFG.HOME_BTN + '」');   // 真实运行:补点「返回主页」
+      if (dryRun) return { status: 'skipped', message: '此前已提交成功(试运行,未执行任何操作)' };   // 试运行不点任何东西
+      return goHome('此前已提交成功,本次仅执行「' + CFG.HOME_BTN + '」');   // 真实运行:补点「返回主页」
     }
 
     if (CFG.READY_TEXT) {                            // 配置了就绪文字才检查
@@ -787,15 +769,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           { timeout: T.tag, label: CFG.READY_TEXT });
       } catch (e) {
         if (e.message === '__abort') throw e;
-        return { status: 'skipped', message: '页面上没有「' + CFG.READY_TEXT + '」,没有操作' };
+        return { status: 'skipped', message: '任务状态不是「' + CFG.READY_TEXT + '」,未执行操作' };
       }
     }
 
     // 1. 点顶栏「提交」(如果上次失败留下了打开的确认弹窗,就直接用它)
     let dialog = findDialog(CFG.CONFIRM_HINT);       // 先看确认弹窗是不是已经开着
     if (!dialog) {
-      if (isDisabled(topBtn)) return { status: 'skipped', message: '顶栏「' + CFG.TOP_BTN + '」按钮不可点' };   // 按钮灰了,跳过
-      step('第 1 步:点击顶栏「' + CFG.TOP_BTN + '」');
+      if (isDisabled(topBtn)) return { status: 'skipped', message: '顶栏「' + CFG.TOP_BTN + '」按钮不可用' };   // 按钮灰了,跳过
+      step('步骤 1/3:点击顶栏「' + CFG.TOP_BTN + '」');
       realClick(topBtn);                             // 点击
       dialog = await waitFor(() => findDialog(CFG.CONFIRM_HINT),   // 等确认弹窗出现
         { timeout: T.dialog, label: '确认弹窗' });
@@ -803,9 +785,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // 2. 弹窗里的下拉框必须是「质检通过」(默认值可能已经是,不是才去改)
     const root = selectRoot(dialog);                 // 找下拉框
-    if (!root) throw new Error('确认弹窗里没找到下拉框');
+    if (!root) throw new Error('确认弹窗中未找到下拉框');
     if (selectValue(root) !== norm(CFG.TARGET)) {    // 当前值不是目标值,才需要操作
-      step('第 2 步:选择「' + CFG.TARGET + '」');
+      step('步骤 2/3:选择「' + CFG.TARGET + '」');
       const trigger = root.querySelector('.ant-select-selector') || root;   // 点哪里能展开下拉
       const combo = root.querySelector('[role="combobox"]');                // 用来判断是否已展开
       let option = null;
@@ -815,25 +797,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           option = await waitFor(() => findOption(CFG.TARGET), { timeout: T.option, label: '「' + CFG.TARGET + '」选项' });   // 等选项出现
         } catch (e) { if (e.message === '__abort') throw e; }   // 超时就进入下一轮重试
       }
-      if (!option) throw new Error('下拉框里没找到「' + CFG.TARGET + '」选项');
+      if (!option) throw new Error('下拉框中未找到「' + CFG.TARGET + '」选项');
       realClick(option);                             // 点选项
       await waitFor(() => selectValue(root) === norm(CFG.TARGET), { timeout: T.value, label: '选中后的值' });   // 等下拉框显示的值真的变成目标值
     }
-    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框的值不是「' + CFG.TARGET + '」,已中止');   // 最后再核对一次,不对就中止
+    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框取值不是「' + CFG.TARGET + '」,已中止');   // 最后再核对一次,不对就中止
 
     // 3. 试运行:不点最终提交,点取消把弹窗关掉
     if (dryRun) {
       const cancel = findButton(CFG.CANCEL_BTN, { scope: dialog });   // 在弹窗里找"取消"
       if (cancel) realClick(cancel);
       try { await waitFor(() => !isVisible(dialog), { timeout: 3000, label: '弹窗关闭' }); } catch { /* 关得慢不影响结论 */ }
-      return { status: 'ready', message: '流程可以走通(试运行,没有提交)' };   // 试运行到此结束
+      return { status: 'ready', message: '预检通过(试运行,未提交)' };   // 试运行到此结束
     }
 
     // 4. 点弹窗里的「提交」。从这一刻起不再响应「停止」,也不会重试
     const okBtn = findButton(CFG.OK_BTN, { scope: dialog });          // 找弹窗里的"提交"按钮
-    if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗里的「' + CFG.OK_BTN + '」按钮不可用');
-    step('第 3 步:点击确认弹窗的「' + CFG.OK_BTN + '」');
-    await send({ type: 'PHASE', phase: 'final-clicked', text: '已点最终提交,等待结果…' }); // 先告诉后台,再点(await 等后台回执)
+    if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗中的「' + CFG.OK_BTN + '」按钮不可用');
+    step('步骤 3/3:确认提交');
+    await send({ type: 'PHASE', phase: 'final-clicked', text: '已执行最终提交,等待结果' }); // 先告诉后台,再点(await 等后台回执)
     const before = visibleDialogs();                 // 记下点之前就开着的弹窗,它们不算提交结果
     bs.locked = true;                                // 上锁:此后"停止"无效
     realClick(okBtn);                                // 真正点击最终提交
@@ -845,14 +827,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       error = scanError(dialog, before) || error;    // 有报错就记下(没有就保留上一次记下的)
       return false;                                  // 继续等
     }, { timeout: T.final, label: '提交结果' }).catch(() => false);   // 30 秒还没成功 → ok=false
-    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后报错:' + error + '。请到该标签页确认,不要重试' };
+    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后出现异常:' + error + '。请人工核实,切勿重复提交' };
     if (!ok) {                                       // 30 秒内既没成功也没报错
       return { status: 'unknown', afterFinal: true,
-        message: '点了最终提交,' + T.final / 1000 + ' 秒内没出现成功或错误提示。请手动确认任务状态,不要重试' };
+        message: '已执行最终提交,' + T.final / 1000 + ' 秒内未收到结果。请人工核实提交状态,切勿重复提交' };
     }
 
     // 6. 成功
-    return goHome('已提交成功');
+    return goHome('提交成功');
   }
 ```
 
@@ -860,13 +842,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 ```js
   async function run(opts) {                         // 后台调用的入口
-    if (bs.running) return { status: 'skipped', message: '这个标签页正在运行中' };   // 防重复启动
+    if (bs.running) return { status: 'skipped', message: '该标签页正在处理中' };   // 防重复启动
     bs.running = true; bs.abort = false; bs.locked = false;   // 重置状态
     try {
       return await flow(opts || {});                 // 跑主流程,返回它的结果
     } catch (e) {                                    // 主流程里任何 throw 都落到这里
-      if (e.message === '__abort') return { status: 'skipped', message: '已停止,没有提交' };   // 被中止
-      if (bs.locked) return { status: 'unknown', afterFinal: true, message: e.message + '(已点过最终提交,请人工确认,不要重试)' };   // 已点最终提交后出错 → 未知
+      if (e.message === '__abort') return { status: 'skipped', message: '已停止,未提交' };   // 被中止
+      if (bs.locked) return { status: 'unknown', afterFinal: true, message: e.message + '(已执行最终提交,请人工核实,切勿重复提交)' };   // 已点最终提交后出错 → 待确认
       return { status: 'error', message: e.message };   // 点最终提交前出错 → 普通失败
     } finally {
       bs.running = false;                            // 不管成败,都标记"没在运行"
@@ -887,20 +869,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // 真正干活的是 background.js。popup 一失去焦点就会被浏览器销毁,所以进度不放在这里,
 // 而是由后台写进 chrome.storage.session,popup 每次打开都从那里读。
 //
-// 域名不写死:打开时取「你当前所在的标签页」的域名填进输入框,按它来筛标签页。
+// 范围固定是所有窗口的所有标签页;域名默认不限,填了才只处理该域名下的。
+// 点「开始」后 popup 立刻关掉,不挡视线;再点扩展图标就能看到进度。
 
-// 默认值偏保守:先试运行、一次只处理 1 个
-// dryRun=试运行 / concurrency=并发数 / scope=范围 / limit=最多处理数 / host=域名 / hostEdited=域名是否被你手动改过 / anyHost=是否不限域名
-const DEFAULTS = { dryRun: true, concurrency: 5, scope: 'window', limit: 1, host: '', hostEdited: false, anyHost: false };
+// 会保存下来的设置。试运行不保存,每次打开都是不勾选,只有你勾了才试运行
+// host=域名筛选(空=全部域名) / limit=处理上限 / concurrency=并发数
+const DEFAULTS = { host: '', limit: 1, concurrency: 1 };
 
 // 状态显示文字 + 排序权重(问题项排在最前面)。数组第 1 项是显示的汉字,第 2 项是排序用的数字(越小越靠前)
 const STATUS = {
   error:   ['失败', 0],
-  unknown: ['未知', 1],
-  skipped: ['跳过', 2],
-  running: ['进行中', 3],
-  pending: ['等待', 4],
-  ready:   ['可提交', 5],
+  unknown: ['待确认', 1],
+  skipped: ['已跳过', 2],
+  running: ['处理中', 3],
+  pending: ['排队中', 4],
+  ready:   ['预检通过', 5],
   success: ['成功', 6],
 };
 ```
@@ -910,42 +893,16 @@ const STATUS = {
 ```js
 const $ = id => document.getElementById(id);      // 简写:$('dry') 就是按 id 找元素
 const el = {                                       // 把所有要用的控件收集到一个对象 el 里,后面用 el.dry 这样访问
-  dry: $('dry'), scope: $('scope'), limit: $('limit'), concurrency: $('concurrency'),
-  host: $('host'), fillHost: $('fillHost'), anyHost: $('anyHost'),
+  dry: $('dry'), limit: $('limit'), concurrency: $('concurrency'), host: $('host'),
   count: $('count'), start: $('start'), retry: $('retry'), stop: $('stop'), clear: $('clear'),
   hint: $('hint'), summary: $('summary'), bar: $('bar'), list: $('list'),
 };
-const FORM_FIELDS = ['dry', 'scope', 'limit', 'concurrency', 'host', 'anyHost'];   // 属于"设置表单"的控件名;运行时要整体禁用、改动时要整体保存
+const FORM_FIELDS = ['dry', 'limit', 'concurrency', 'host'];   // 属于"设置表单"的控件名;运行时要整体禁用、改动时要保存
 
-let lastRun = null;   // 最近一次收到的运行状态,用来判断要不要显示「重跑失败项」
+let lastRun = null;   // 最近一次收到的运行状态,用来判断要不要显示「重试失败项」
 ```
 
-### 5.3 域名处理
-
-```js
-/* ---------- 域名 ---------- */
-
-// www.a.b.example.com → example.com;IP 和 localhost 原样返回
-function baseDomain(hostname) {
-  // 空 / 纯数字和点(IP)/ 含冒号(IPv6)/ 没有点(localhost)→ 原样返回
-  if (!hostname || /^[\d.]+$/.test(hostname) || hostname.includes(':') || !hostname.includes('.')) return hostname;
-  const parts = hostname.split('.');                                // 按点拆开,如 ['www','a','example','com']
-  const shortSecond = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac']);   // 常见的"二级后缀"
-  // 最后一段是 2 个字母(国家码如 cn)且倒数第二段是上面这些 → 保留 3 段(如 xx.com.cn),否则保留 2 段(如 example.com)
-  const keep = parts.at(-1).length === 2 && shortSecond.has(parts.at(-2)) ? 3 : 2;
-  return parts.slice(-keep).join('.');                              // 取最后 keep 段拼回去
-}
-
-async function activeTabDomain() {                 // 取"你当前所在标签页"的域名
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });   // 查当前窗口里激活的标签页
-  try {
-    const u = new URL(tab.url);                    // 把网址解析成对象
-    return /^https?:$/.test(u.protocol) ? baseDomain(u.hostname) : '';   // 只处理 http/https,其余返回空
-  } catch { return ''; }                           // 解析失败返回空
-}
-```
-
-### 5.4 设置的读写
+### 5.3 设置的读写
 
 ```js
 /* ---------- 设置 ---------- */
@@ -956,52 +913,36 @@ function readForm() {                              // 从界面控件读出当�
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
   };
   return {
-    dryRun: el.dry.checked,                        // 复选框是否勾选
-    scope: el.scope.value,                         // 下拉框选的值
-    limit: num(el.limit.value, 0, 500, DEFAULTS.limit),              // 最多处理数,0~500
+    dryRun: el.dry.checked,                        // 试运行模式是否勾选
+    limit: num(el.limit.value, 0, 500, DEFAULTS.limit),              // 处理上限,0~500
     concurrency: num(el.concurrency.value, 1, 10, DEFAULTS.concurrency),   // 并发数,1~10
     host: el.host.value.trim().toLowerCase(),      // 域名:去首尾空格、转小写
-    anyHost: el.anyHost.checked,
-    hostEdited: el.host.dataset.edited === '1',    // 域名框上有没有"手动改过"的标记
   };
 }
 
-function applyForm(s) {                            // 把设置 s 填回界面控件(和 readForm 相反)
-  el.dry.checked = s.dryRun;
-  el.scope.value = s.scope;
+function applyForm(s) {                            // 把保存的设置填回界面(试运行不填,保持不勾选)
   el.limit.value = s.limit;
   el.concurrency.value = s.concurrency;
   el.host.value = s.host;
-  el.host.dataset.edited = s.hostEdited ? '1' : '';   // 用 data-edited 属性记录"是否手动改过"
-  el.anyHost.checked = s.anyHost;
-  el.host.disabled = s.anyHost;                    // 勾了"所有网站"就禁用域名输入框
-  el.fillHost.disabled = s.anyHost;                // 同时禁用"取当前页"按钮
 }
 
-async function loadSettings() {                    // 从浏览器本地存储读上次保存的设置
-  const { settings } = await chrome.storage.local.get('settings');
-  return { ...DEFAULTS, ...settings };             // 用默认值打底,上次保存的覆盖在上面
+// 旧版本存在 'settings' 里的设置(自动填的域名、默认勾选的试运行)不再读取
+async function loadPrefs() {                       // 从浏览器本地存储读上次保存的设置
+  const { prefs } = await chrome.storage.local.get('prefs');
+  return { ...DEFAULTS, ...prefs };                // 用默认值打底,上次保存的覆盖在上面
 }
 ```
 
-### 5.5 找出要处理的标签页
+### 5.4 找出要处理的标签页
 
 ```js
 /* ---------- 找出要处理的标签页 ---------- */
 
-function tabQuery(scope) {                         // 根据"范围"拼出查询条件
-  const q = {};
-  if (scope === 'window') q.currentWindow = true;                       // 当前窗口
-  if (scope === 'selected') { q.currentWindow = true; q.highlighted = true; }   // 当前窗口里被选中(高亮)的
-  return q; // 'all' 不加限制 = 所有标签页(所有窗口里的)
-}
-
-function matches(tab, form) {                      // 判断某个标签页是否符合条件
+function matches(tab, form) {                      // 判断某个标签页是否符合域名条件
   let u;
   try { u = new URL(tab.url); } catch { return false; }   // 网址解析失败 → 不符合
   if (!/^https?:$/.test(u.protocol)) return false; // edge:// 之类的页面注入不了
-  if (form.anyHost) return true;                   // 不限域名 → 符合
-  return !!form.host && u.hostname.toLowerCase().includes(form.host);   // 域名里包含你填的文字(注意是"包含",不是"相等")
+  return !form.host || u.hostname.toLowerCase().includes(form.host);   // 没填域名 → 全部符合;填了 → 域名里包含它才符合
 }
 
 // 任务页的网址是 …/editor?…,主页是 …/operator/home。只有任务页才处理
@@ -1015,26 +956,21 @@ function tabName(tab) {
 
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
-// 不是任务页的(主页等)先排除掉,不占「最多处理」的名额
+// 不是任务页的(主页等)先排除掉,不计入处理上限
 async function getTargets(form) {
-  const all = (await chrome.tabs.query(tabQuery(form.scope))).filter(t => matches(t, form));   // 查询并过滤
+  const all = (await chrome.tabs.query({})).filter(t => matches(t, form));   // 查所有窗口的所有标签页,按域名过滤
   all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));   // 按窗口、再按标签页位置排序(从左到右)
   const tasks = all.filter(isTaskPage);            // 只留下任务页(去掉主页等)
   const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;    // limit>0 就只取前 limit 个,0 表示全要
   return { all, tasks, picked };                   // all=匹配到的全部;tasks=其中的任务页;picked=本次实际处理的
 }
 
-async function refreshCount() {                    // 更新"匹配到 X 个,本次处理 Y 个"那行文字
-  const form = readForm();
-  if (!form.anyHost && !form.host) { el.count.textContent = '先填域名,或勾选「所有网站」'; return; }
-  const { all, tasks, picked } = await getTargets(form);
-  const other = all.length - tasks.length;         // 不是任务页的个数
-  el.count.textContent = `匹配到 ${all.length} 个标签页` +
-    (other ? `,其中 ${other} 个不是任务页(主页等),不处理` : '') +
-    `;本次处理 ${picked.length} 个`;
+async function refreshCount() {                    // 更新"检测到 X 个任务页,本次将处理 Y 个"那行文字
+  const { tasks, picked } = await getTargets(readForm());
+  el.count.textContent = `检测到 ${tasks.length} 个任务页,本次将处理 ${picked.length} 个`;
 }
 
-// 上一次运行里「提交之前就出错」的标签页(提交之后出错 / 结果未知的不能重跑)
+// 上一次运行里「提交之前就出错」的标签页(提交之后出错 / 待确认的不能重试)
 async function retryTargets() {
   // 筛出:状态是 error 且 afterFinal 不为真(即最终提交之前出的错)
   const items = (lastRun?.items || []).filter(it => it.status === 'error' && !it.afterFinal);
@@ -1047,17 +983,18 @@ async function retryTargets() {
 }
 ```
 
-### 5.6 开始 / 重跑 / 停止
+### 5.5 开始 / 重试 / 停止
 
 ```js
-/* ---------- 开始 / 重跑 / 停止 ---------- */
+/* ---------- 开始 / 重试 / 停止 ---------- */
 
 function setHint(text) { el.hint.textContent = text || ''; }   // 设置提示文字
 
-async function launch(key, targets) {              // 真正发起运行;key 是 'start' 或 'retry'
+// 发起运行。启动成功就关掉 popup,不挡视线;启动不了就留着显示原因
+async function launch(key, targets) {              // key 是 'start'(开始执行)或 'retry'(重试失败项)
   const form = readForm();
-  if (!targets.length) { setHint(key === 'start' ? '没有找到匹配的标签页。' : '没有可重跑的标签页。'); return; }   // 没有目标就提示并结束
-  setHint('');                                     // 点一次就直接开始,没有二次确认
+  if (!targets.length) { setHint(key === 'start' ? '未检测到任务页。' : '没有可重试的标签页。'); return; }   // 没有目标就提示并结束
+  setHint('');
 
   try {
     const r = await chrome.runtime.sendMessage({   // 给后台发 START 消息
@@ -1065,28 +1002,24 @@ async function launch(key, targets) {              // 真正发起运行;key 是
       options: { dryRun: form.dryRun, concurrency: form.concurrency },
       tabs: targets.map(t => ({ id: t.id, title: tabName(t) || '(无标题)' })),   // 只传 id 和名字(任务名)
     });
-    if (r && r.ok === false) setHint(r.error || '启动失败');    // 后台拒绝了(比如已有任务在跑)
+    if (r && r.ok === false) { setHint(r.error || '启动失败'); return; }   // 后台拒绝了(比如已有任务在执行),留着窗口显示原因
+    window.close();                                // 启动成功 → 立刻关掉扩展窗口
   } catch (e) {
-    setHint('无法联系后台脚本:' + e.message);
+    setHint('无法连接扩展后台:' + e.message);
   }
 }
 
-async function onStart() {                         // 点"开始"
-  const form = readForm();
-  if (!form.anyHost && !form.host) { setHint('先填域名,或勾选「所有网站」。'); return; }
-  const { picked } = await getTargets(form);
-  await launch('start', picked);
-}
+async function onStart() { await launch('start', (await getTargets(readForm())).picked); }   // 点"开始执行"
 
-async function onRetry() { await launch('retry', await retryTargets()); }   // 点"重跑失败项"
+async function onRetry() { await launch('retry', await retryTargets()); }   // 点"重试失败项"
 
 async function onStop() {                          // 点"停止"
   try { await chrome.runtime.sendMessage({ type: 'STOP' }); }
-  catch (e) { setHint('无法联系后台脚本:' + e.message); }
+  catch (e) { setHint('无法连接扩展后台:' + e.message); }
 }
 ```
 
-### 5.7 显示进度
+### 5.6 显示进度
 
 ```js
 /* ---------- 显示进度 ---------- */
@@ -1095,31 +1028,29 @@ function render(run) {                             // 根据后台存的 run 重
   lastRun = run || null;
   const running = !!run && run.state === 'running';
   el.stop.hidden = !running;                       // 只有运行中才显示"停止"
-  el.start.disabled = running;                     // 运行中禁用"开始"
-  el.clear.disabled = running;                     // 运行中禁用"清除记录"
+  el.start.disabled = running;                     // 运行中禁用"开始执行"
+  el.clear.disabled = running;                     // 运行中禁用"清空记录"
   for (const k of FORM_FIELDS) el[k].disabled = running;   // 运行中禁用所有设置控件,防止中途乱改
-  if (!running) { el.host.disabled = el.anyHost.checked; el.fillHost.disabled = el.anyHost.checked; }   // 没运行时,域名框是否禁用取决于"所有网站"
-  el.fillHost.disabled = running || el.anyHost.checked;
 
-  // 有"提交之前出错"的项,且没在运行,才显示"重跑失败项"
+  // 有"提交之前出错"的项,且没在运行,才显示"重试失败项"
   const retryable = !running && !!run && run.items.some(it => it.status === 'error' && !it.afterFinal);
   el.retry.hidden = !retryable;
 
+  el.bar.hidden = !run || !run.total;              // 没有运行记录就不显示进度条
   if (!run || !run.total) {                        // 没有运行记录 → 显示空状态后结束
-    el.summary.textContent = '还没有运行记录';
-    el.bar.max = 1; el.bar.value = 0;
+    el.summary.textContent = '暂无执行记录';
     el.list.replaceChildren();                     // 清空列表
     return;
   }
 
   const c = run.counts || {};
-  const parts = [`${run.done}/${run.total}`];      // 汇总文字的各个片段,先放"已完成/总数"
-  if (run.dryRun) parts.push('试运行');
+  const parts = [`进度 ${run.done}/${run.total}`]; // 汇总文字的各个片段,先放"已完成/总数"
+  if (run.dryRun) parts.push('试运行模式');
   if (c.success) parts.push(`成功 ${c.success}`);
-  if (c.ready) parts.push(`可提交 ${c.ready}`);
+  if (c.ready) parts.push(`预检通过 ${c.ready}`);
   if (c.error) parts.push(`失败 ${c.error}`);
-  if (c.unknown) parts.push(`未知 ${c.unknown}`);
-  if (c.skipped) parts.push(`跳过 ${c.skipped}`);
+  if (c.unknown) parts.push(`待确认 ${c.unknown}`);
+  if (c.skipped) parts.push(`已跳过 ${c.skipped}`);
   if (run.state === 'stopped') parts.push(run.note || '已停止');
   el.summary.textContent = parts.join(' · ');      // 用 · 拼接
   el.bar.max = run.total;                          // 进度条总量
@@ -1137,7 +1068,7 @@ function render(run) {                             // 根据后台存的 run 重
     const s = document.createElement('span');      // 状态文字
     s.className = 's';
     s.textContent = STATUS[it.status]?.[0] ?? it.status;
-    const t = document.createElement('span');      // 标签页标题
+    const t = document.createElement('span');      // 任务名
     t.className = 't';
     t.textContent = it.title;
     li.append(s, t);
@@ -1154,40 +1085,30 @@ function render(run) {                             // 根据后台存的 run 重
 // 点一条记录,跳到对应的标签页(失败的页面会被保留着,方便你去处理)
 async function focusTab(tabId) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (!tab) { setHint('这个标签页已经关闭了。'); return; }
+  if (!tab) { setHint('该标签页已关闭。'); return; }
   await chrome.tabs.update(tabId, { active: true });                  // 切到该标签页
   await chrome.windows.update(tab.windowId, { focused: true });       // 并把它所在的窗口置前
 }
 ```
 
-### 5.8 事件绑定
+### 5.7 事件绑定
 
 ```js
 /* ---------- 事件绑定 ---------- */
 
-async function onFormChange(e) {                   // 任何设置改动时执行
+async function onFormChange() {                    // 任何设置改动时执行
   setHint('');
-  if (e && e.target === el.host) el.host.dataset.edited = '1'; // 手动改过域名,下次打开不再自动覆盖
-  el.host.disabled = el.anyHost.checked;
-  el.fillHost.disabled = el.anyHost.checked;
-  await chrome.storage.local.set({ settings: readForm() });   // 把设置存进本地存储(下次打开还在)
-  refreshCount();                                  // 重新统计匹配数量
+  const { host, limit, concurrency } = readForm(); // 只保存这三项,试运行不保存
+  await chrome.storage.local.set({ prefs: { host, limit, concurrency } });   // 存进本地存储(下次打开还在)
+  refreshCount();                                  // 重新统计任务页数量
 }
 // 给每个设置控件绑定事件:文本框用 input(每输入一个字就触发),其他用 change(值改变时触发)
 for (const k of FORM_FIELDS) el[k].addEventListener(k === 'host' ? 'input' : 'change', onFormChange);
 
-el.fillHost.addEventListener('click', async () => {   // 点"取当前页"
-  const d = await activeTabDomain();
-  if (!d) { setHint('当前标签页不是普通网页,取不到域名。'); return; }
-  el.host.value = d;                               // 填入域名
-  el.host.dataset.edited = '';                     // 清除"手动改过"标记(这是自动取的)
-  await onFormChange();
-});
-
 el.start.addEventListener('click', onStart);       // 绑定各按钮
 el.retry.addEventListener('click', onRetry);
 el.stop.addEventListener('click', onStop);
-el.clear.addEventListener('click', () => chrome.storage.session.remove('run'));   // 清除记录 = 删掉存储里的 run
+el.clear.addEventListener('click', () => chrome.storage.session.remove('run'));   // 清空记录 = 删掉存储里的 run
 
 // 后台每更新一次进度,这里就跟着重画(popup 开着或重新打开都一样)
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -1195,20 +1116,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 ```
 
-### 5.9 初始化
+### 5.8 初始化
 
 ```js
 (async function init() {                           // 弹窗一打开就执行
-  const s = await loadSettings();                  // 读上次保存的设置
-  // 没手动改过域名 → 每次都以「当前所在标签页」为准
-  if (!s.hostEdited || !s.host) {
-    const d = await activeTabDomain();
-    if (d) { s.host = d; s.hostEdited = false; }
-  }
-  applyForm(s);                                    // 把设置填回界面
+  applyForm(await loadPrefs());                    // 读上次保存的设置并填回界面
   const { run } = await chrome.storage.session.get('run');   // 读后台存的最新进度
   render(run);                                     // 画出来
-  await refreshCount();                            // 统计标签页数量
+  await refreshCount();                            // 统计任务页数量
 })();
 ```
 
@@ -1216,24 +1131,20 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 ## 6. README.txt —— 使用说明
 
-这是给人看的文字说明,不是代码,内容已经是中文,这里只概括要点:
+这是给人看的文字说明,不是代码,这里只概括要点:
 
-1. **安装**:解压得到 `batch-submit` 文件夹 → 浏览器地址栏进 `edge://extensions`(Chrome 用 `chrome://extensions`)→ 打开"开发人员模式" → "加载解压缩的扩展" → 选这个文件夹。**解压后的文件夹不能删、不能移动**,浏览器每次启动都从这个位置读取它。
-2. **第一次使用务必按顺序**:
-   1. 停在任意一个任务标签页上点扩展图标,"域名包含"会自动填好。
-   2. 保持默认(勾选试运行、最多处理 1 个),点"开始"。结果显示"可提交"= 三步都点对了。
-   3. 取消"试运行",仍只处理 1 个,点"开始"(点一次就直接开始),这个任务会真的提交。
-   4. 没问题再把"最多处理"改成 0(不限),并发数建议 5。
-3. **结果状态**:成功 / 可提交 / 失败 / 未知 / 跳过(含义见前文第 3、4 节)。连续 3 个失败自动停止。
-   只处理网址里是 `/editor` 的任务页,主页等其他页面开始前就排除掉;结果列表显示网址里的任务名(`task_name`)。
-4. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页点该扩展的刷新按钮。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
+1. **安装**:解压得到 `batch-submit` 文件夹 → 地址栏打开 `edge://extensions`(Chrome 用 `chrome://extensions`)→ 开启「开发人员模式」→「加载解压缩的扩展」→ 选这个文件夹。文件夹要放在固定位置,不能删、不能移动。
+2. **界面**:域名筛选(留空 = 全部域名)、处理上限(默认 1,0 = 不限)、并发数(默认 1)、试运行模式(每次打开都不勾选)。处理范围固定是所有窗口的全部标签页,只处理 `/editor` 任务页。点「开始执行」后扩展窗口立刻关闭。
+3. **建议首次流程**:先勾选试运行处理 1 个,看到「预检通过」;再取消试运行真实提交 1 个;没问题后把处理上限改成 0。
+4. **结果状态**:成功 / 预检通过 / 失败 / 待确认 / 已跳过(含义见前文第 3、4 节)。连续 3 项失败自动终止。
+5. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页重新加载该扩展。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
 
 ---
 
 ## 7. 全局小结:一次真实提交的完整时间线
 
 ```
-你点「开始」                 popup → 后台:START {options, tabs}
+你点「开始执行」             popup → 后台:START {options, tabs},扩展窗口立即关闭
 后台 startRun               建 run,保存,开保活,按并发数启动 N 个 worker
 worker 取一个标签页         processItem:确认加载 → 注入 inject.js → 调用 window.__bs.run
 inject.js flow              找顶栏提交 → 点 → 等确认弹窗 → 确认下拉=质检通过
@@ -1245,4 +1156,4 @@ inject.js                   反复扫描:出现成功弹窗就算成功;报错�
 全部完成                    run.state='done',关保活,最后保存
 ```
 
-**核心安全设计一句话:点最终提交之前,一切都可中止、可重跑;点了之后,绝不重试,没把握就标"未知"交给人。**
+**核心安全设计一句话:点最终提交之前,一切都可中止、可重试;点了之后,绝不重试,没把握就标"待确认"交给人。**

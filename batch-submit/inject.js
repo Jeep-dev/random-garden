@@ -139,7 +139,7 @@
     // 1. 新出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
     const other = visibleDialogs().find(d => !before.includes(d) &&
       d !== confirmDialog && !d.contains(confirmDialog) && !confirmDialog.contains(d));
-    if (other) return '出现了另一个弹窗:' + dialogText(other);
+    if (other) return '出现非预期弹窗:' + dialogText(other);
 
     // 2. 顶部提示 / 通知
     for (const t of document.querySelectorAll('.ant-message-notice, .ant-notification-notice')) {
@@ -164,7 +164,7 @@
     await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);
     const home = findButton(CFG.HOME_BTN, { scope: findSuccess() || document });
     if (home) realClick(home);
-    return home ? done : { ...done, message: message + '(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
+    return home ? done : { ...done, message: message + '(未找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
   }
 
   /* ---------------- 主流程 ---------------- */
@@ -173,20 +173,20 @@
     const T = CFG.T;
 
     // 0. 前置检查:找不到顶栏提交按钮 / 不是「任务有效」状态,就什么都不动
-    step('等待页面加载…');
+    step('等待页面加载');
     let topBtn;
     try {
       topBtn = await waitFor(() => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' }),
         { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
     } catch (e) {
       if (e.message === '__abort') throw e;
-      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };
+      return { status: 'skipped', message: '未检测到顶栏「' + CFG.TOP_BTN + '」按钮(非任务页或页面未加载完成)' };
     }
 
     // 页面上还开着成功弹窗 = 之前已经提交成功了(比如上次被误判成失败),绝不能再提交一次
     if (findSuccess()) {
-      if (dryRun) return { status: 'skipped', message: '之前已经提交成功(试运行,没有点任何东西)' };
-      return goHome('之前已经提交成功,这次只点了「' + CFG.HOME_BTN + '」');
+      if (dryRun) return { status: 'skipped', message: '此前已提交成功(试运行,未执行任何操作)' };
+      return goHome('此前已提交成功,本次仅执行「' + CFG.HOME_BTN + '」');
     }
 
     if (CFG.READY_TEXT) {
@@ -195,15 +195,15 @@
           { timeout: T.tag, label: CFG.READY_TEXT });
       } catch (e) {
         if (e.message === '__abort') throw e;
-        return { status: 'skipped', message: '页面上没有「' + CFG.READY_TEXT + '」,没有操作' };
+        return { status: 'skipped', message: '任务状态不是「' + CFG.READY_TEXT + '」,未执行操作' };
       }
     }
 
     // 1. 点顶栏「提交」(如果上次失败留下了打开的确认弹窗,就直接用它)
     let dialog = findDialog(CFG.CONFIRM_HINT);
     if (!dialog) {
-      if (isDisabled(topBtn)) return { status: 'skipped', message: '顶栏「' + CFG.TOP_BTN + '」按钮不可点' };
-      step('第 1 步:点击顶栏「' + CFG.TOP_BTN + '」');
+      if (isDisabled(topBtn)) return { status: 'skipped', message: '顶栏「' + CFG.TOP_BTN + '」按钮不可用' };
+      step('步骤 1/3:点击顶栏「' + CFG.TOP_BTN + '」');
       realClick(topBtn);
       dialog = await waitFor(() => findDialog(CFG.CONFIRM_HINT),
         { timeout: T.dialog, label: '确认弹窗' });
@@ -211,9 +211,9 @@
 
     // 2. 弹窗里的下拉框必须是「质检通过」(默认值可能已经是,不是才去改)
     const root = selectRoot(dialog);
-    if (!root) throw new Error('确认弹窗里没找到下拉框');
+    if (!root) throw new Error('确认弹窗中未找到下拉框');
     if (selectValue(root) !== norm(CFG.TARGET)) {
-      step('第 2 步:选择「' + CFG.TARGET + '」');
+      step('步骤 2/3:选择「' + CFG.TARGET + '」');
       const trigger = root.querySelector('.ant-select-selector') || root;
       const combo = root.querySelector('[role="combobox"]');
       let option = null;
@@ -223,25 +223,25 @@
           option = await waitFor(() => findOption(CFG.TARGET), { timeout: T.option, label: '「' + CFG.TARGET + '」选项' });
         } catch (e) { if (e.message === '__abort') throw e; }
       }
-      if (!option) throw new Error('下拉框里没找到「' + CFG.TARGET + '」选项');
+      if (!option) throw new Error('下拉框中未找到「' + CFG.TARGET + '」选项');
       realClick(option);
       await waitFor(() => selectValue(root) === norm(CFG.TARGET), { timeout: T.value, label: '选中后的值' });
     }
-    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框的值不是「' + CFG.TARGET + '」,已中止');
+    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框取值不是「' + CFG.TARGET + '」,已中止');
 
     // 3. 试运行:不点最终提交,点取消把弹窗关掉
     if (dryRun) {
       const cancel = findButton(CFG.CANCEL_BTN, { scope: dialog });
       if (cancel) realClick(cancel);
       try { await waitFor(() => !isVisible(dialog), { timeout: 3000, label: '弹窗关闭' }); } catch { /* 关得慢不影响结论 */ }
-      return { status: 'ready', message: '流程可以走通(试运行,没有提交)' };
+      return { status: 'ready', message: '预检通过(试运行,未提交)' };
     }
 
     // 4. 点弹窗里的「提交」。从这一刻起不再响应「停止」,也不会重试
     const okBtn = findButton(CFG.OK_BTN, { scope: dialog });
-    if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗里的「' + CFG.OK_BTN + '」按钮不可用');
-    step('第 3 步:点击确认弹窗的「' + CFG.OK_BTN + '」');
-    await send({ type: 'PHASE', phase: 'final-clicked', text: '已点最终提交,等待结果…' }); // 先告诉后台,再点
+    if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗中的「' + CFG.OK_BTN + '」按钮不可用');
+    step('步骤 3/3:确认提交');
+    await send({ type: 'PHASE', phase: 'final-clicked', text: '已执行最终提交,等待结果' }); // 先告诉后台,再点
     const before = visibleDialogs();
     bs.locked = true;
     realClick(okBtn);
@@ -253,24 +253,24 @@
       error = scanError(dialog, before) || error;
       return false;
     }, { timeout: T.final, label: '提交结果' }).catch(() => false);
-    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后报错:' + error + '。请到该标签页确认,不要重试' };
+    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后出现异常:' + error + '。请人工核实,切勿重复提交' };
     if (!ok) {
       return { status: 'unknown', afterFinal: true,
-        message: '点了最终提交,' + T.final / 1000 + ' 秒内没出现成功或错误提示。请手动确认任务状态,不要重试' };
+        message: '已执行最终提交,' + T.final / 1000 + ' 秒内未收到结果。请人工核实提交状态,切勿重复提交' };
     }
 
     // 6. 成功
-    return goHome('已提交成功');
+    return goHome('提交成功');
   }
 
   async function run(opts) {
-    if (bs.running) return { status: 'skipped', message: '这个标签页正在运行中' };
+    if (bs.running) return { status: 'skipped', message: '该标签页正在处理中' };
     bs.running = true; bs.abort = false; bs.locked = false;
     try {
       return await flow(opts || {});
     } catch (e) {
-      if (e.message === '__abort') return { status: 'skipped', message: '已停止,没有提交' };
-      if (bs.locked) return { status: 'unknown', afterFinal: true, message: e.message + '(已点过最终提交,请人工确认,不要重试)' };
+      if (e.message === '__abort') return { status: 'skipped', message: '已停止,未提交' };
+      if (bs.locked) return { status: 'unknown', afterFinal: true, message: e.message + '(已执行最终提交,请人工核实,切勿重复提交)' };
       return { status: 'error', message: e.message };
     } finally {
       bs.running = false;

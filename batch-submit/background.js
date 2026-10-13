@@ -50,21 +50,21 @@ function setItem(item, patch) {
 
 /* ---------- 后台被浏览器回收后的善后 ---------- */
 // 后台脚本空闲太久会被浏览器杀掉。如果杀掉时还有任务在跑,重启后我们不知道结果,
-// 必须诚实地标成「未知」,绝不能当成功或失败,更不能自动重试。
+// 必须诚实地标成「待确认」,绝不能当成功或失败,更不能自动重试。
 (async function recover() {
   const { run: saved } = await chrome.storage.session.get('run');
   if (run || !saved || saved.state !== 'running') return; // run 已存在 = 这次启动就是为了开始新任务
   for (const it of saved.items) {
     if (it.status === 'running') {
       it.status = 'unknown';
-      it.message = '后台脚本被浏览器重启,不确定是否已提交。请到该标签页手动确认,不要重试';
+      it.message = '扩展后台进程被浏览器重启,提交状态未知。请人工核实,切勿重复提交';
     } else if (it.status === 'pending') {
       it.status = 'skipped';
-      it.message = '后台脚本被浏览器重启,没有处理';
+      it.message = '扩展后台进程被浏览器重启,未处理';
     }
   }
   saved.state = 'stopped';
-  saved.note = '后台被重启,已中断';
+  saved.note = '后台进程重启,任务已中断';
   run = saved;
   await save();
 })();
@@ -97,17 +97,17 @@ async function ensureLoaded(tabId) {
 
 async function processItem(item, options) {
   const tabId = item.tabId;
-  await setItem(item, { status: 'running', message: '准备中…' });
+  await setItem(item, { status: 'running', message: '准备中' });
 
   let tab;
   try { tab = await chrome.tabs.get(tabId); }
-  catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }
+  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }
   if (!/^https?:/i.test(tab.url || '')) {
-    return setItem(item, { status: 'skipped', message: '不是普通网页,无法操作' });
+    return setItem(item, { status: 'skipped', message: '非网页标签页,无法处理' });
   }
 
   try { await ensureLoaded(tabId); }
-  catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }
+  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }
 
   const waiter = { finalClicked: false, resolve: null };
   const resultMsg = new Promise(resolve => { waiter.resolve = resolve; });
@@ -127,16 +127,16 @@ async function processItem(item, options) {
   let res = await Promise.race([resultMsg, injected, watchdog]);
   waiters.delete(tabId);
 
-  // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「未知」
+  // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「待确认」
   const after = waiter.finalClicked;
   if (!res || res.__error || res.__watchdog || !TERMINAL.has(res.status)) {
     let why;
-    if (!res) why = '页面中途跳转或被关闭,没有拿到结果';
-    else if (res.__watchdog) why = '处理超过 ' + TAB_WATCHDOG_MS / 60000 + ' 分钟,放弃等待';
+    if (!res) why = '页面在处理过程中跳转或关闭,未获取到结果';
+    else if (res.__watchdog) why = '处理超时(超过 ' + TAB_WATCHDOG_MS / 60000 + ' 分钟)';
     else if (res.__error) why = res.__error;
-    else why = '页面返回了无法识别的结果';
+    else why = '页面返回结果无法识别';
     res = after
-      ? { status: 'unknown', afterFinal: true, message: why + '。已点过最终提交,请手动确认,不要重试' }
+      ? { status: 'unknown', afterFinal: true, message: why + '。已执行最终提交,请人工核实提交状态,切勿重复提交' }
       : { status: 'error', message: why };
   }
   await setItem(item, { status: res.status, message: res.message || '', afterFinal: !!res.afterFinal });
@@ -161,7 +161,7 @@ async function startRun({ options, tabs }) {
       if (item.status === 'error' || item.status === 'unknown') {
         if (++fails >= MAX_CONSECUTIVE_FAILS) {
           stopRequested = true;
-          stopReason = '连续 ' + MAX_CONSECUTIVE_FAILS + ' 个失败,已自动停止';
+          stopReason = '连续 ' + MAX_CONSECUTIVE_FAILS + ' 项失败,已自动终止';
         }
       } else if (item.status === 'success' || item.status === 'ready') {
         fails = 0;
@@ -172,7 +172,7 @@ async function startRun({ options, tabs }) {
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
 
   for (const it of items) {
-    if (it.status === 'pending') { it.status = 'skipped'; it.message = stopReason || '已停止,没有处理'; }
+    if (it.status === 'pending') { it.status = 'skipped'; it.message = stopReason || '已停止,未处理'; }
   }
   run.state = stopRequested ? 'stopped' : 'done';
   run.note = stopReason;
@@ -199,10 +199,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
 
   if (msg.type === 'START') {
-    if (run && run.state === 'running') { sendResponse({ ok: false, error: '已经有任务在运行' }); return; }
+    if (run && run.state === 'running') { sendResponse({ ok: false, error: '已有任务正在执行' }); return; }
     sendResponse({ ok: true });
     startRun(msg).catch(async e => {
-      if (run) { run.state = 'stopped'; run.note = '后台出错:' + e.message; stopKeepAlive(); await save(); }
+      if (run) { run.state = 'stopped'; run.note = '后台异常:' + e.message; stopKeepAlive(); await save(); }
     });
     return;
   }
