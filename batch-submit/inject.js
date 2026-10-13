@@ -243,6 +243,8 @@
     step('步骤 3/3:确认提交');
     await send({ type: 'PHASE', phase: 'final-clicked', text: '已执行最终提交,等待结果' }); // 先告诉后台,再点
     const before = visibleDialogs();
+    // 点之前最后再核对一次下拉框,确保提交的一定是「质检通过」
+    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框取值不是「' + CFG.TARGET + '」,已中止');
     bs.locked = true;
     realClick(okBtn);
 

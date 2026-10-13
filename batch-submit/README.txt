@@ -1,4 +1,4 @@
-批量提交助手 v0.3.0 —— 安装与使用说明
+批量提交助手 v0.3.1 —— 安装与使用说明
 
 【安装】
 1. 解压压缩包,得到 batch-submit 文件夹(含 manifest.json、background.js、inject.js、popup.html、popup.js)。

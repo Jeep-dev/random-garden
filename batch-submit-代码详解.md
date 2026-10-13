@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.3.0。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.3.1。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "在标注平台的多个任务标签页中批量执行提交流程:提交 → 选择「质检通过」→ 确认提交 → 返回主页",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.3.0"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.3.1"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -817,6 +817,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     step('步骤 3/3:确认提交');
     await send({ type: 'PHASE', phase: 'final-clicked', text: '已执行最终提交,等待结果' }); // 先告诉后台,再点(await 等后台回执)
     const before = visibleDialogs();                 // 记下点之前就开着的弹窗,它们不算提交结果
+    // 点之前最后再核对一次下拉框,确保提交的一定是「质检通过」
+    if (selectValue(root) !== norm(CFG.TARGET)) throw new Error('下拉框取值不是「' + CFG.TARGET + '」,已中止');
     bs.locked = true;                                // 上锁:此后"停止"无效
     realClick(okBtn);                                // 真正点击最终提交
 
