@@ -5,6 +5,8 @@
 //                 { type:'STOP' }                                                      停止(已点最终提交的页面不受影响)
 //   页面 → 后台   { type:'PHASE', text, phase? }   进度文字;phase:'final-clicked' 表示马上要点最终提交
 //                 { type:'RESULT', result }        成功结果(页面随后会跳走,所以要先报)
+//                 { type:'WAKE' }                  页面在后台没画出来,请切到前台;回复 { ok } 表示切好了
+//                 { type:'WOKE' }                  不再需要前台了,可以切下一个
 //   存储 'run'    { state:'running'|'done'|'stopped', total, done, counts, note, dryRun,
 //                   items:[{tabId,title,status,message,afterFinal}] }
 
@@ -13,12 +15,14 @@
 const MAX_CONSECUTIVE_FAILS = 3;            // 连续失败这么多个就整体停下
 const TAB_WATCHDOG_MS = 4 * 60 * 1000;      // 单个标签页最长处理时间
 const LOAD_WAIT_MS = 60 * 1000;             // 等标签页加载完的最长时间
+const WAKE_HOLD_MS = 15 * 1000;             // 一个标签页最多占着前台这么久(页面没回 WOKE 时的兜底)
 
 let run = null;                              // 当前运行状态(内存里一份,同时写进 storage)
 let stopRequested = false;
 let stopReason = '';
 let keepAliveTimer = null;
-const waiters = new Map();                   // tabId -> { finalClicked, resolve }
+const waiters = new Map();                   // tabId -> { finalClicked, resolve, releaseWake }
+let wakeQueue = Promise.resolve();           // 切到前台要排队:同一时间只切一个
 
 const TERMINAL = new Set(['success', 'ready', 'error', 'unknown', 'skipped']);
 
@@ -80,10 +84,10 @@ function startKeepAlive() {
 }
 function stopKeepAlive() { clearInterval(keepAliveTimer); keepAliveTimer = null; }
 
-// 确保标签页已经加载:被浏览器休眠(discarded)的先刷新;还在加载的等它加载完
+// 确保标签页已经加载:被浏览器休眠(discarded)或还没加载过(unloaded)的先刷新;还在加载的等它加载完
 async function ensureLoaded(tabId) {
   let tab = await chrome.tabs.get(tabId);
-  if (tab.discarded) await chrome.tabs.reload(tabId);
+  if (tab.discarded || tab.status === 'unloaded') await chrome.tabs.reload(tabId);
   const t0 = Date.now();
   for (;;) {
     tab = await chrome.tabs.get(tabId);
@@ -91,6 +95,24 @@ async function ensureLoaded(tabId) {
     if (Date.now() - t0 > LOAD_WAIT_MS) return; // 单页应用往往早就能用了,让页面里的脚本自己等元素
     await sleep(500);
   }
+}
+
+// 把标签页切到前台。浏览器不绘制后台标签页、最小化或被挡住的窗口里的页面,
+// 而任务页要先画出来才会出现顶栏按钮,所以从没显示过的标签页要切过去一次。
+// 画出来以后再回到后台不影响后面的步骤。排队进行,轮到时任务已经结束就不切了。
+function wakeTab(tabId, waiter) {
+  const turn = wakeQueue.then(async () => {
+    if (stopRequested || waiters.get(tabId) !== waiter) return false;
+    const tab = await chrome.tabs.get(tabId);
+    const win = await chrome.windows.get(tab.windowId);
+    await chrome.tabs.update(tabId, { active: true });
+    if (win.state === 'minimized') await chrome.windows.update(win.id, { state: 'normal' });
+    await chrome.windows.update(win.id, { focused: true });
+    return true;
+  }).catch(() => false);
+  const released = new Promise(r => { waiter.releaseWake = r; });
+  wakeQueue = turn.then(ok => ok && Promise.race([released, sleep(WAKE_HOLD_MS)]));
+  return turn;
 }
 
 /* ---------- 处理单个标签页 ---------- */
@@ -109,7 +131,7 @@ async function processItem(item, options) {
   try { await ensureLoaded(tabId); }
   catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }
 
-  const waiter = { finalClicked: false, resolve: null };
+  const waiter = { finalClicked: false, resolve: null, releaseWake: null };
   const resultMsg = new Promise(resolve => { waiter.resolve = resolve; });
   waiters.set(tabId, waiter);
 
@@ -126,6 +148,7 @@ async function processItem(item, options) {
 
   let res = await Promise.race([resultMsg, injected, watchdog]);
   waiters.delete(tabId);
+  if (waiter.releaseWake) waiter.releaseWake();
 
   // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「未知」
   const after = waiter.finalClicked;
@@ -228,6 +251,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'RESULT') {
     waiter.resolve(msg.result);
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === 'WAKE') {
+    wakeTab(tabId, waiter).then(ok => sendResponse({ ok }));
+    return true; // 异步回复:排到队、切好之后才回
+  }
+
+  if (msg.type === 'WOKE') {
+    if (waiter.releaseWake) waiter.releaseWake();
     sendResponse({ ok: true });
   }
 });

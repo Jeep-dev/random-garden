@@ -22,7 +22,8 @@
     SUCCESS_TEXT: '提交任务成功',    // 成功弹窗里的文字
     HOME_BTN: '返回主页领取新任务',  // 成功弹窗里的按钮
     // 各步骤最长等待(毫秒)。你们网络慢,所以给得很宽
-    T: { page: 30000, tag: 8000, dialog: 30000, option: 4000, value: 8000, final: 30000 },
+    // 页面在后台时先等 hidden,还没有顶栏按钮就切到前台,最多占着前台 woke,之后回到后台接着等,共等 page
+    T: { page: 30000, hidden: 10000, woke: 8000, tag: 8000, dialog: 30000, option: 4000, value: 8000, final: 30000 },
   };
 
   const bs = (window.__bs = { running: false, abort: false, locked: false, run });
@@ -163,13 +164,29 @@
 
     // 0. 前置检查:找不到顶栏提交按钮 / 不是「任务有效」状态,就什么都不动
     step('等待页面加载…');
-    let topBtn;
-    try {
-      topBtn = await waitFor(() => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' }),
-        { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
-    } catch (e) {
-      if (e.message === '__abort') throw e;
-      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };
+    const findTop = () => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' });
+    const waitTop = timeout => waitFor(findTop, { timeout, label: '顶栏「' + CFG.TOP_BTN + '」按钮' })
+      .catch(e => { if (e.message === '__abort') throw e; return null; });
+    let topBtn = await waitTop(document.hidden ? T.hidden : T.page);
+
+    // 浏览器不绘制后台标签页 / 最小化窗口里的页面,从没显示过的任务页可能还没画出顶栏
+    // (新开在后台的、被休眠后重新加载的、在别的窗口里的)。这时请后台把它切到前台再等
+    let woke = false;
+    if (!topBtn && document.hidden) {
+      step('页面在后台还没画出顶栏,排队切到前台…');
+      const r = await send({ type: 'WAKE' });
+      if (bs.abort) throw new Error('__abort');
+      if (r && r.ok) {
+        woke = true;
+        step('已切到前台,等待顶栏「' + CFG.TOP_BTN + '」按钮…');
+        try { topBtn = await waitTop(T.woke); }
+        finally { send({ type: 'WOKE' }); } // 画过一次就够了,让后台去切下一个
+        if (!topBtn) topBtn = await waitTop(T.page - T.woke);
+      }
+    }
+    if (!topBtn) {
+      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮' +
+        (woke ? '(切到前台后也没有,不是任务页?)' : '(不是任务页,或页面还没加载完)') };
     }
     if (CFG.READY_TEXT) {
       try {
