@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.2.0。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.2.2。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "在标注平台的多个标签页里批量执行提交流程(提交 → 质检通过 → 确认提交 → 返回主页)",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.2.0"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.2.2"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -189,7 +189,7 @@ li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
     <select id="scope">                         <!-- 下拉框:在哪些窗口里找标签页 -->
       <option value="window">当前窗口</option>     <!-- 只找你当前这个浏览器窗口 -->
       <option value="selected">选中的标签页</option> <!-- 只找你按住 Ctrl/Shift 选中的 -->
-      <option value="all">所有窗口</option>        <!-- 所有窗口 -->
+      <option value="all">所有标签页</option>      <!-- 所有窗口里的标签页 -->
     </select>
     <!-- 数字框 id="limit":最多处理几个,0 表示不限,范围 0~500 -->
     最多处理 <input type="number" id="limit" min="0" max="500"> 个 <span class="dim">(0 = 不限)</span>
@@ -567,7 +567,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // 在 window 上挂一个对象 __bs(batch-submit 的缩写),后台通过 window.__bs.run(...) 来启动流程
   // running=是否在运行;abort=是否被要求中止;locked=是否已点最终提交(锁定后不再响应中止)
-  const bs = (window.__bs = { running: false, abort: false, locked: false, run });
+  // probe=给弹窗用的"这页有没有顶栏提交按钮"检查(见 4.11)
+  const bs = (window.__bs = { running: false, abort: false, locked: false, run, probe });
 ```
 
 ### 4.3 小工具函数
@@ -659,6 +660,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     [...scope.querySelectorAll('button, [role="button"], .ant-btn')].find(    // 候选:所有 button、role=button 的元素、antd 按钮
       b => norm(b.textContent) === norm(text) && isVisible(b) && !(outside && b.closest(outside))   // 文字(去空白后)相等 + 可见 + 不在被排除区域
     ) || null;                                       // 找不到就返回 null
+
+  // 找顶栏"提交"按钮(排除弹窗里的同名按钮)。主流程和弹窗的检查都用它
+  const findTop = () => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' });
 
   // 所有"可见的弹窗":role="dialog" 的元素里挑可见的
   const visibleDialogs = () => [...document.querySelectorAll('[role="dialog"]')].filter(isVisible);
@@ -759,8 +763,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     let topBtn;
     try {
       // 等顶栏"提交"按钮出现(排除弹窗里的同名按钮)
-      topBtn = await waitFor(() => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' }),
-        { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
+      topBtn = await waitFor(findTop, { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
     } catch (e) {
       if (e.message === '__abort') throw e;          // 如果是被中止,继续往外抛
       return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };   // 否则跳过
@@ -844,6 +847,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 ### 4.11 run:流程的外壳
 
 ```js
+  // 给 popup 用:页面现在有没有顶栏「提交」按钮。主页之类没有的,不算要处理的任务页
+  function probe() { return !!findTop(); }           // 只看一眼,不等待、不点任何东西
+
   async function run(opts) {                         // 后台调用的入口
     if (bs.running) return { status: 'skipped', message: '这个标签页正在运行中' };   // 防重复启动
     bs.running = true; bs.abort = false; bs.locked = false;   // 重置状态
@@ -980,7 +986,7 @@ function tabQuery(scope) {                         // 根据"范围"拼出查询
   const q = {};
   if (scope === 'window') q.currentWindow = true;                       // 当前窗口
   if (scope === 'selected') { q.currentWindow = true; q.highlighted = true; }   // 当前窗口里被选中(高亮)的
-  return q; // 'all' 不加限制 = 所有窗口
+  return q; // 'all' 不加限制 = 所有标签页(所有窗口里的)
 }
 
 function matches(tab, form) {                      // 判断某个标签页是否符合条件
@@ -991,20 +997,40 @@ function matches(tab, form) {                      // 判断某个标签页是�
   return !!form.host && u.hostname.toLowerCase().includes(form.host);   // 域名里包含你填的文字(注意是"包含",不是"相等")
 }
 
+// 页面现在有没有顶栏「提交」按钮:true 有 / false 没有(主页等)/ null 看不了(休眠中、还在加载)
+async function hasTopButton(tab) {
+  if (tab.discarded || tab.status !== 'complete') return null;   // 休眠中或还在加载,现在看不准
+  try {
+    // 先把 inject.js 放进页面(只是定义函数,不会点任何东西),再调用里面的 probe() 看一眼
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['inject.js'] });
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.__bs.probe() });
+    return typeof r?.result === 'boolean' ? r.result : null;
+  } catch { return null; }                         // 注入失败(没权限、刚关掉)也算看不了
+}
+
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
+// 没有顶栏「提交」按钮的(主页等)先排除掉,不占「最多处理」的名额;看不了的留着,交给后台加载后再判断
 async function getTargets(form) {
   const all = (await chrome.tabs.query(tabQuery(form.scope))).filter(t => matches(t, form));   // 查询并过滤
   all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));   // 按窗口、再按标签页位置排序(从左到右)
-  const picked = form.limit > 0 ? all.slice(0, form.limit) : all;        // limit>0 就只取前 limit 个,0 表示全要
-  return { all, picked };                          // all=匹配到的全部;picked=本次实际处理的
+  const has = await Promise.all(all.map(hasTopButton));   // 同时看每个标签页有没有提交按钮
+  const tasks = all.filter((t, i) => has[i] !== false);   // 去掉"确定没有"的(主页等)
+  const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;   // limit>0 就只取前 limit 个,0 表示全要
+  return { all, tasks, picked };                   // all=匹配到的全部;tasks=去掉主页后的;picked=本次实际处理的
 }
 
+let countSeq = 0; // 表单改得快时,只显示最后一次统计的结果
 async function refreshCount() {                    // 更新"匹配到 X 个,本次处理 Y 个"那行文字
   const form = readForm();
   if (!form.anyHost && !form.host) { el.count.textContent = '先填域名,或勾选「所有网站」'; return; }
-  const { all, picked } = await getTargets(form);
-  el.count.textContent = `匹配到 ${all.length} 个标签页,本次处理 ${picked.length} 个`;
+  const seq = ++countSeq;                          // 这是第几次统计
+  const { all, tasks, picked } = await getTargets(form);
+  if (seq !== countSeq) return;                    // 统计期间又改了表单,有更新的统计,这次的结果作废
+  const other = all.length - tasks.length;         // 被排除的(没有提交按钮的)个数
+  el.count.textContent = `匹配到 ${all.length} 个标签页` +
+    (other ? `,其中 ${other} 个没有顶栏「提交」按钮(主页等),不处理` : '') +
+    `;本次处理 ${picked.length} 个`;
 }
 
 // 上一次运行里「提交之前就出错」的标签页(提交之后出错 / 结果未知的不能重跑)

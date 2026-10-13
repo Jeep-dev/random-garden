@@ -91,7 +91,7 @@ function tabQuery(scope) {
   const q = {};
   if (scope === 'window') q.currentWindow = true;
   if (scope === 'selected') { q.currentWindow = true; q.highlighted = true; }
-  return q; // 'all' 不加限制 = 所有窗口
+  return q; // 'all' 不加限制 = 所有标签页(所有窗口里的)
 }
 
 function matches(tab, form) {
@@ -102,20 +102,39 @@ function matches(tab, form) {
   return !!form.host && u.hostname.toLowerCase().includes(form.host);
 }
 
+// 页面现在有没有顶栏「提交」按钮:true 有 / false 没有(主页等)/ null 看不了(休眠中、还在加载)
+async function hasTopButton(tab) {
+  if (tab.discarded || tab.status !== 'complete') return null;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['inject.js'] });
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => window.__bs.probe() });
+    return typeof r?.result === 'boolean' ? r.result : null;
+  } catch { return null; }
+}
+
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
+// 没有顶栏「提交」按钮的(主页等)先排除掉,不占「最多处理」的名额;看不了的留着,交给后台加载后再判断
 async function getTargets(form) {
   const all = (await chrome.tabs.query(tabQuery(form.scope))).filter(t => matches(t, form));
   all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));
-  const picked = form.limit > 0 ? all.slice(0, form.limit) : all;
-  return { all, picked };
+  const has = await Promise.all(all.map(hasTopButton));
+  const tasks = all.filter((t, i) => has[i] !== false);
+  const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;
+  return { all, tasks, picked };
 }
 
+let countSeq = 0; // 表单改得快时,只显示最后一次统计的结果
 async function refreshCount() {
   const form = readForm();
   if (!form.anyHost && !form.host) { el.count.textContent = '先填域名,或勾选「所有网站」'; return; }
-  const { all, picked } = await getTargets(form);
-  el.count.textContent = `匹配到 ${all.length} 个标签页,本次处理 ${picked.length} 个`;
+  const seq = ++countSeq;
+  const { all, tasks, picked } = await getTargets(form);
+  if (seq !== countSeq) return;
+  const other = all.length - tasks.length;
+  el.count.textContent = `匹配到 ${all.length} 个标签页` +
+    (other ? `,其中 ${other} 个没有顶栏「提交」按钮(主页等),不处理` : '') +
+    `;本次处理 ${picked.length} 个`;
 }
 
 // 上一次运行里「提交之前就出错」的标签页(提交之后出错 / 结果未知的不能重跑)
