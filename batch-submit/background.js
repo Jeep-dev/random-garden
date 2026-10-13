@@ -106,6 +106,9 @@ async function processItem(item, options) {
     return setItem(item, { status: 'skipped', message: '非网页标签页,无法处理' });
   }
 
+  // 切到正在处理的标签页,让你看到它在动(并发时停在最新开始的那个)
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+
   try { await ensureLoaded(tabId); }
   catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }
 

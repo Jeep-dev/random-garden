@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.3.2。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.3.3。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "在标注平台的多个任务标签页中批量执行提交流程:提交 → 选择「质检通过」→ 确认提交 → 返回主页",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.3.2"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.3.3"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -345,6 +345,9 @@ async function processItem(item, options) {  // item = 这个标签页的记录;
   if (!/^https?:/i.test(tab.url || '')) {    // 网址不是 http/https 开头(比如 edge:// 内置页)
     return setItem(item, { status: 'skipped', message: '非网页标签页,无法处理' });  // 注入不了,跳过
   }
+
+  // 切到正在处理的标签页,让你看到它在动(并发时停在最新开始的那个)
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});   // 切换失败也不影响处理
 
   try { await ensureLoaded(tabId); }         // 确保标签页加载好
   catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }  // 加载期间被关了,跳过
@@ -1141,7 +1144,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 这是给人看的文字说明,不是代码,这里只概括要点:
 
 1. **安装**:解压得到 `batch-submit` 文件夹 → 地址栏打开 `edge://extensions`(Chrome 用 `chrome://extensions`)→ 开启「开发人员模式」→「加载解压缩的扩展」→ 选这个文件夹。文件夹要放在固定位置,不能删、不能移动。
-2. **处理顺序**:从当前所在的标签页开始往右,到头后再处理左边的。
+2. **处理顺序**:从当前所在的标签页开始往右,到头后再处理左边的;浏览器会自动切到正在处理的标签页。
 3. **界面**:域名筛选(留空 = 全部域名)、处理上限(默认 1,0 = 不限)、并发数(默认 1)、试运行模式(每次打开都不勾选)。处理范围固定是所有窗口的全部标签页,只处理 `/editor` 任务页。点「开始执行」后扩展窗口立刻关闭。
 4. **建议首次流程**:先勾选试运行处理 1 个,看到「预检通过」;再取消试运行真实提交 1 个;没问题后把处理上限改成 0。
 5. **结果状态**:成功 / 预检通过 / 失败 / 待确认 / 已跳过(含义见前文第 3、4 节)。连续 3 项失败自动终止。
