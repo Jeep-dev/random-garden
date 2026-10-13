@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.2.1。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.2.0。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.2.1",
+  "version": "0.2.0",
   "description": "在标注平台的多个标签页里批量执行提交流程(提交 → 质检通过 → 确认提交 → 返回主页)",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.2.1"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.2.0"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -238,8 +238,6 @@ li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 //                 { type:'STOP' }                                                      停止(已点最终提交的页面不受影响)
 //   页面 → 后台   { type:'PHASE', text, phase? }   进度文字;phase:'final-clicked' 表示马上要点最终提交
 //                 { type:'RESULT', result }        成功结果(页面随后会跳走,所以要先报)
-//                 { type:'WAKE' }                  页面在后台没画出来,请切到前台;回复 { ok } 表示切好了
-//                 { type:'WOKE' }                  不再需要前台了,可以切下一个
 //   存储 'run'    { state:'running'|'done'|'stopped', total, done, counts, note, dryRun,
 //                   items:[{tabId,title,status,message,afterFinal}] }
 //   (run 就是"本次运行的全部状态",popup 从存储里读它来画界面)
@@ -253,14 +251,12 @@ li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
 const MAX_CONSECUTIVE_FAILS = 3;            // 连续失败这么多个就整体停下(熔断,防止一直出错还硬提交)
 const TAB_WATCHDOG_MS = 4 * 60 * 1000;      // 单个标签页最长处理时间:4 分钟(单位毫秒)。超时就放弃等待
 const LOAD_WAIT_MS = 60 * 1000;             // 等标签页加载完的最长时间:60 秒
-const WAKE_HOLD_MS = 15 * 1000;             // 一个标签页最多占着前台 15 秒(页面没回 WOKE 时的兜底),然后轮到下一个
 
 let run = null;                              // 当前运行状态(内存里一份,同时写进 storage)。null = 还没开始过
 let stopRequested = false;                   // 有没有人要求停止(用户点停止,或连续失败触发熔断)
 let stopReason = '';                         // 停止的原因文字,显示给用户
 let keepAliveTimer = null;                   // "保活定时器"的编号,后面用来取消它
-const waiters = new Map();                   // 字典:标签页 id → 它的"等待记录" { finalClicked, resolve, releaseWake }
-let wakeQueue = Promise.resolve();           // "切到前台"的排队队伍:同一时间只切一个,一个用完下一个才开始
+const waiters = new Map();                   // 字典:标签页 id → 它的"等待记录" { finalClicked, resolve }
 
 // 这些是"已经有最终结论"的状态。凡是在这个集合里的,就算这个标签页处理完了
 const TERMINAL = new Set(['success', 'ready', 'error', 'unknown', 'skipped']);
@@ -341,11 +337,10 @@ function startKeepAlive() {                  // 开启"保活"
 }
 function stopKeepAlive() { clearInterval(keepAliveTimer); keepAliveTimer = null; }  // 关闭保活
 
-// 确保标签页已经加载:被浏览器休眠(discarded)或还没加载过(unloaded)的先刷新;还在加载的等它加载完
+// 确保标签页已经加载:被浏览器休眠(discarded)的先刷新;还在加载的等它加载完
 async function ensureLoaded(tabId) {
   let tab = await chrome.tabs.get(tabId);    // 读取这个标签页的当前信息
-  // 被浏览器"休眠"丢弃了(省内存),或者浏览器重启后还没加载过(status 是 'unloaded'),先刷新唤醒
-  if (tab.discarded || tab.status === 'unloaded') await chrome.tabs.reload(tabId);
+  if (tab.discarded) await chrome.tabs.reload(tabId);   // 如果被浏览器"休眠"丢弃了(省内存),先刷新唤醒
   const t0 = Date.now();                     // 记下开始等待的时刻
   for (;;) {                                 // 死循环,直到满足条件 return
     tab = await chrome.tabs.get(tabId);      // 重新读取最新状态
@@ -354,29 +349,7 @@ async function ensureLoaded(tabId) {
     await sleep(500);                        // 每 500 毫秒检查一次
   }
 }
-
-// 把标签页切到前台。浏览器不绘制后台标签页、最小化或被挡住的窗口里的页面,
-// 而任务页要先画出来才会出现顶栏按钮,所以从没显示过的标签页要切过去一次。
-// 画出来以后再回到后台不影响后面的步骤。排队进行,轮到时任务已经结束就不切了。
-function wakeTab(tabId, waiter) {
-  const turn = wakeQueue.then(async () => {  // 排在队伍最后,前面的都用完前台了才轮到这里
-    if (stopRequested || waiters.get(tabId) !== waiter) return false;   // 已经停止,或这个标签页已经处理完 → 不切
-    const tab = await chrome.tabs.get(tabId);
-    const win = await chrome.windows.get(tab.windowId);   // 它所在的窗口
-    await chrome.tabs.update(tabId, { active: true });    // 在窗口里切到这个标签页
-    if (win.state === 'minimized') await chrome.windows.update(win.id, { state: 'normal' });   // 窗口最小化了就还原
-    await chrome.windows.update(win.id, { focused: true });   // 窗口放到最前面(被别的窗口挡住也不绘制)
-    return true;                             // 切好了
-  }).catch(() => false);                     // 出错(比如标签页刚被关掉)就当没切成
-  // releaseWake 交给页面:页面发 WOKE(或这个标签页处理完)时调用,表示"前台用完了"
-  const released = new Promise(r => { waiter.releaseWake = r; });
-  // 队伍的下一位要等:这次切成功了,就等前台用完(最多 WAKE_HOLD_MS);没切成就不用等
-  wakeQueue = turn.then(ok => ok && Promise.race([released, sleep(WAKE_HOLD_MS)]));
-  return turn;                               // 返回"切好没有"给消息入口,它再回复给页面
-}
 ```
-
-> **为什么要切到前台?** 浏览器为了省电,**不绘制看不见的页面**(后台标签页、最小化或被挡住的窗口),页面里靠"下一次绘制"(`requestAnimationFrame`)才执行的代码都会停住。标注平台这类页面往往要先画一帧才会显示顶栏按钮,所以**从来没显示过**的标签页(在后台新开的、被 Edge 休眠后重新加载的、放在别的窗口里没看过的)会一直找不到「提交」按钮。「选中的标签页」能用,是因为你按住 Ctrl 点标签页去选中它们时,每个都被切到前台画过一次;「所有窗口」会带上别的窗口里从没看过的标签页,所以以前会报"没找到顶栏「提交」按钮"。
 
 ### 3.6 处理单个标签页(核心)
 
@@ -398,8 +371,7 @@ async function processItem(item, options) {  // item = 这个标签页的记录;
   catch { return setItem(item, { status: 'skipped', message: '标签页已经关闭' }); }  // 加载期间被关了,跳过
 
   // 为这个标签页准备一个"等待记录":finalClicked 记录页面是否已点过最终提交;resolve 是收到成功结果时要调用的函数
-  // releaseWake 是"前台用完了"的通知函数,只有这个页面请求过切到前台时才会有
-  const waiter = { finalClicked: false, resolve: null, releaseWake: null };
+  const waiter = { finalClicked: false, resolve: null };
   // 创建一个承诺 resultMsg:当页面发来 RESULT 消息时(调用 waiter.resolve),这个承诺就完成
   const resultMsg = new Promise(resolve => { waiter.resolve = resolve; });
   waiters.set(tabId, waiter);                // 登记到全局字典,这样消息入口能按标签页 id 找到它
@@ -422,7 +394,6 @@ async function processItem(item, options) {  // item = 这个标签页的记录;
   //   resultMsg = 页面主动汇报的成功;injected = 脚本执行完返回的结果;watchdog = 超时
   let res = await Promise.race([resultMsg, injected, watchdog]);
   waiters.delete(tabId);                     // 赛跑结束,删掉等待记录
-  if (waiter.releaseWake) waiter.releaseWake();   // 如果还占着前台,让出来给下一个(页面中途跳走、超时都能兜住)
 
   // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「未知」
   const after = waiter.finalClicked;         // 是否已点过最终提交
@@ -547,17 +518,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'RESULT') {               // 页面汇报成功结果
     waiter.resolve(msg.result);              // 让 processItem 里的 resultMsg 承诺完成,赛跑有了结果
     sendResponse({ ok: true });
-    return;
-  }
-
-  if (msg.type === 'WAKE') {                 // 页面说:我在后台没画出来,请把我切到前台
-    wakeTab(tabId, waiter).then(ok => sendResponse({ ok }));   // 排队、切好之后才回复
-    return true; // 返回 true = 告诉浏览器"我稍后才回复",否则回复通道会被立刻关掉
-  }
-
-  if (msg.type === 'WOKE') {                 // 页面说:前台用完了
-    if (waiter.releaseWake) waiter.releaseWake();   // 让队伍里的下一个标签页切过去
-    sendResponse({ ok: true });
   }
 });
 ```
@@ -602,8 +562,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 各步骤最长等待(毫秒)。你们网络慢,所以给得很宽
     //   page 等页面出现提交按钮 30秒 / tag 等"任务有效"文字 8秒 / dialog 等确认弹窗 30秒
     //   option 等下拉选项 4秒 / value 等选中后的值 8秒 / final 点最终提交后等结果 30秒
-    //   hidden 页面在后台时先等 10秒,还没有按钮就切到前台;woke 最多占着前台 8秒,之后回到后台接着等,一共等 page
-    T: { page: 30000, hidden: 10000, woke: 8000, tag: 8000, dialog: 30000, option: 4000, value: 8000, final: 30000 },
+    T: { page: 30000, tag: 8000, dialog: 30000, option: 4000, value: 8000, final: 30000 },
   };
 
   // 在 window 上挂一个对象 __bs(batch-submit 的缩写),后台通过 window.__bs.run(...) 来启动流程
@@ -797,32 +756,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // 0. 前置检查:找不到顶栏提交按钮 / 不是「任务有效」状态,就什么都不动
     step('等待页面加载…');                            // 汇报进度
-    // 找顶栏"提交"按钮(排除弹窗里的同名按钮)
-    const findTop = () => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' });
-    // 等顶栏按钮出现最多 timeout 毫秒:等到了返回按钮,超时返回 null;被中止就继续往外抛
-    const waitTop = timeout => waitFor(findTop, { timeout, label: '顶栏「' + CFG.TOP_BTN + '」按钮' })
-      .catch(e => { if (e.message === '__abort') throw e; return null; });
-    // document.hidden = 页面现在看不见(后台标签页/最小化窗口)。看不见就先只等 10 秒,看得见就等满 30 秒
-    let topBtn = await waitTop(document.hidden ? T.hidden : T.page);
-
-    // 浏览器不绘制后台标签页 / 最小化窗口里的页面,从没显示过的任务页可能还没画出顶栏
-    // (新开在后台的、被休眠后重新加载的、在别的窗口里的)。这时请后台把它切到前台再等
-    let woke = false;                                // 记下有没有切到前台过,用来区分跳过的原因
-    if (!topBtn && document.hidden) {
-      step('页面在后台还没画出顶栏,排队切到前台…');
-      const r = await send({ type: 'WAKE' });        // 请后台切;排队期间这里一直等着
-      if (bs.abort) throw new Error('__abort');      // 排队时用户点了停止 → 中止
-      if (r && r.ok) {                               // 切好了
-        woke = true;
-        step('已切到前台,等待顶栏「' + CFG.TOP_BTN + '」按钮…');
-        try { topBtn = await waitTop(T.woke); }      // 在前台最多等 8 秒
-        finally { send({ type: 'WOKE' }); } // 画过一次就够了,让后台去切下一个
-        if (!topBtn) topBtn = await waitTop(T.page - T.woke);   // 还没有就回到后台接着等,凑满 30 秒
-      }
-    }
-    if (!topBtn) {                                   // 最后还是没有 → 什么都不动,跳过
-      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮' +
-        (woke ? '(切到前台后也没有,不是任务页?)' : '(不是任务页,或页面还没加载完)') };
+    let topBtn;
+    try {
+      // 等顶栏"提交"按钮出现(排除弹窗里的同名按钮)
+      topBtn = await waitFor(() => findButton(CFG.TOP_BTN, { outside: '[role="dialog"]' }),
+        { timeout: T.page, label: '顶栏「' + CFG.TOP_BTN + '」按钮' });
+    } catch (e) {
+      if (e.message === '__abort') throw e;          // 如果是被中止,继续往外抛
+      return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };   // 否则跳过
     }
     if (CFG.READY_TEXT) {                            // 配置了就绪文字才检查
       try {
@@ -1282,8 +1223,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
    3. 取消"试运行",仍只处理 1 个,点"开始"后 5 秒内再点一次确认,这个任务会真的提交。
    4. 没问题再把"最多处理"改成 0(不限),并发数建议 5。
 3. **结果状态**:成功 / 可提交 / 失败 / 未知 / 跳过(含义见前文第 3、4 节)。连续 3 个失败自动停止。
-4. **会自动切换标签页/窗口**:没显示过的标签页会被逐个切到前台画一次(见 3.5 节),运行时窗口跳动是正常的,弹窗被关掉后重新点开就能看到进度。
-5. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页点该扩展的刷新按钮。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
+4. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页点该扩展的刷新按钮。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
 
 ---
 
@@ -1294,8 +1234,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 你点「开始」(第 2 次)       popup → 后台:START {options, tabs}
 后台 startRun               建 run,保存,开保活,按并发数启动 N 个 worker
 worker 取一个标签页         processItem:确认加载 → 注入 inject.js → 调用 window.__bs.run
-inject.js flow              找顶栏提交(在后台画不出来就发 WAKE,后台排队把它切到前台)
-                            → 点 → 等确认弹窗 → 确认下拉=质检通过
+inject.js flow              找顶栏提交 → 点 → 等确认弹窗 → 确认下拉=质检通过
 inject.js                   发 PHASE(final-clicked) → 后台记下 finalClicked=true → 回执
 inject.js                   bs.locked=true → 点弹窗「提交」
 inject.js                   scanOutcome 反复扫描:成功弹窗 / 其他弹窗 / 报错提示 / 超时
