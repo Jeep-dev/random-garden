@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.2.3。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.2.4。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "在标注平台的多个标签页里批量执行提交流程(提交 → 质检通过 → 确认提交 → 返回主页)",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.2.3"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.2.4"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -134,9 +134,6 @@ button { border: 1px solid #2c333d; background: transparent; color: inherit; bor
 
 /* 主按钮(开始):蓝底白字 */
 button.primary { background: #2f8cff; border-color: #2f8cff; color: #fff; }
-
-/* 危险按钮(真实提交上膛后变红):红底白字 */
-button.danger { background: #e5484d; border-color: #e5484d; color: #fff; }
 
 /* 被禁用的按钮:半透明,鼠标移上去显示"禁止"图标 */
 button:disabled { opacity: .5; cursor: not-allowed; }
@@ -714,18 +711,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return t && b ? clip(t.textContent) + ':' + clip(b.textContent) : clip(d.textContent);
   };
 
+  // 成功的标志:出现「提交任务成功」弹窗,或带「返回主页领取新任务」按钮的弹窗
+  const findSuccess = () => findDialog(CFG.SUCCESS_TEXT) || findDialog(CFG.HOME_BTN);
+
+  // 找提交后的报错,没有返回 null。
+  // before = 点最终提交前就开着的弹窗(比如「任务基本信息」),它们不是提交的结果,不算
   // 出现这些词的提示,就当作报错
   const ERROR_WORDS = /失败|错误|异常|无法|不能|缺少|未通过|请先|超时|不允许|没有权限/;
-  function scanOutcome(confirmDialog) {              // 扫描点最终提交之后页面上发生了什么;返回结果对象,或 null(还没结果)
-    // 1. 成功弹窗
-    if (findDialog(CFG.SUCCESS_TEXT)) return { status: 'success' };
-
-    // 2. 出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
-    const other = visibleDialogs().find(d =>
+  function scanError(confirmDialog, before) {        // 返回报错文字,或 null(没发现报错)
+    // 1. 新出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
+    const other = visibleDialogs().find(d => !before.includes(d) &&   // 点提交前就开着的不算
       d !== confirmDialog && !d.contains(confirmDialog) && !confirmDialog.contains(d));   // 排除确认弹窗自己及它的父/子元素
-    if (other) return { status: 'error', message: '出现了另一个弹窗:' + dialogText(other) };
+    if (other) return '出现了另一个弹窗:' + dialogText(other);
 
-    // 3. 顶部提示 / 通知(antd 的 message 和 notification)
+    // 2. 顶部提示 / 通知(antd 的 message 和 notification)
     for (const t of document.querySelectorAll('.ant-message-notice, .ant-notification-notice')) {
       if (!isVisible(t)) continue;                   // 不可见的跳过
       const text = clip(t.textContent);
@@ -733,18 +732,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 看提示里有没有"错误/警告"图标或样式
       const iconErr = t.querySelector(
         '.anticon-close-circle, .anticon-exclamation-circle, .anticon-warning, [class*="-error"], [class*="-warning"]');
-      if (iconErr || ERROR_WORDS.test(text)) return { status: 'error', message: text };   // 有错误图标或含错误词 → 报错
+      if (iconErr || ERROR_WORDS.test(text)) return text;   // 有错误图标或含错误词 → 报错
     }
 
-    // 4. 确认弹窗里的校验提示(表单下面的红字等)
+    // 3. 确认弹窗里的校验提示(表单下面的红字等)
     for (const a of confirmDialog.querySelectorAll('[role="alert"], .ant-form-item-explain-error, .ant-alert-error')) {
-      if (isVisible(a) && clip(a.textContent)) return { status: 'error', message: clip(a.textContent) };
+      if (isVisible(a) && clip(a.textContent)) return clip(a.textContent);
     }
-    return null;                                     // 什么都没发现 → 还没结果,继续等
+    return null;                                     // 什么都没发现
+  }
+
+  // 成功:先把结果报给后台,再点「返回主页领取新任务」(点完页面会跳走,脚本随之消失)
+  async function goHome(message) {
+    const done = { status: 'success', afterFinal: true, message };
+    await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);   // 发给后台,但最多等 3 秒
+    const home = findButton(CFG.HOME_BTN, { scope: findSuccess() || document });   // 找"返回主页领取新任务"
+    if (home) realClick(home);                       // 点它,页面会跳转
+    return home ? done : { ...done, message: message + '(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
   }
 ```
 
-> 注意第 3 步的关键词判断可能误报(比如无关的提示里恰好有"请先"),但误报方向是**偏安全**的:最多把成功标成"提交后报错",不会重复提交。
+> **为什么点提交前就开着的弹窗不算?** 比如「任务基本信息」(总帧数、data_id 那个窗口),它可能一直开着(后台标签页里关闭动画会停住)。以前它会被当成"提交后出现了另一个弹窗",把明明成功的任务标成失败。
 
 ### 4.10 主流程 flow
 
@@ -765,6 +773,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (e.message === '__abort') throw e;          // 如果是被中止,继续往外抛
       return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };   // 否则跳过
     }
+
+    // 页面上还开着成功弹窗 = 之前已经提交成功了(比如上次被误判成失败),绝不能再提交一次
+    if (findSuccess()) {
+      if (dryRun) return { status: 'skipped', message: '之前已经提交成功(试运行,没有点任何东西)' };   // 试运行不点任何东西
+      return goHome('之前已经提交成功,这次只点了「' + CFG.HOME_BTN + '」');   // 真实运行:补点「返回主页」
+    }
+
     if (CFG.READY_TEXT) {                            // 配置了就绪文字才检查
       try {
         // 等页面文字里出现"任务有效"
@@ -819,25 +834,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗里的「' + CFG.OK_BTN + '」按钮不可用');
     step('第 3 步:点击确认弹窗的「' + CFG.OK_BTN + '」');
     await send({ type: 'PHASE', phase: 'final-clicked', text: '已点最终提交,等待结果…' }); // 先告诉后台,再点(await 等后台回执)
+    const before = visibleDialogs();                 // 记下点之前就开着的弹窗,它们不算提交结果
     bs.locked = true;                                // 上锁:此后"停止"无效
     realClick(okBtn);                                // 真正点击最终提交
 
-    // 5. 等结果
-    let out;
-    try {
-      out = await waitFor(() => scanOutcome(dialog), { timeout: T.final, label: '提交结果' });   // 反复扫描,直到出现成功/错误
-    } catch {                                        // 30 秒都没出现任何结果
+    // 5. 等结果:只要成功弹窗出来就是成功。网络慢时它会晚到,所以看到报错也只先记下,继续等满 T.final
+    let error = null;                                // 最近看到的报错文字
+    const ok = await waitFor(() => {
+      if (findSuccess()) return true;                // 成功弹窗出来了 → 成功,不管之前看到过什么
+      error = scanError(dialog, before) || error;    // 有报错就记下(没有就保留上一次记下的)
+      return false;                                  // 继续等
+    }, { timeout: T.final, label: '提交结果' }).catch(() => false);   // 30 秒还没成功 → ok=false
+    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后报错:' + error + '。请到该标签页确认,不要重试' };
+    if (!ok) {                                       // 30 秒内既没成功也没报错
       return { status: 'unknown', afterFinal: true,
         message: '点了最终提交,' + T.final / 1000 + ' 秒内没出现成功或错误提示。请手动确认任务状态,不要重试' };
     }
-    if (out.status === 'error') return { status: 'error', afterFinal: true, message: '提交后报错:' + out.message };
 
-    // 6. 成功:先把结果报给后台,再点「返回主页领取新任务」(点完页面会跳走,脚本随之消失)
-    const done = { status: 'success', afterFinal: true, message: '已提交成功' };
-    await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);   // 发给后台,但最多等 3 秒
-    const home = findButton(CFG.HOME_BTN, { scope: findDialog(CFG.SUCCESS_TEXT) || document });   // 找"返回主页领取新任务"
-    if (home) realClick(home);                       // 点它,页面会跳转
-    return home ? done : { ...done, message: '已提交成功(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
+    // 6. 成功
+    return goHome('已提交成功');
   }
 ```
 
@@ -903,8 +918,6 @@ const el = {                                       // 把所有要用的控件�
 const FORM_FIELDS = ['dry', 'scope', 'limit', 'concurrency', 'host', 'anyHost'];   // 属于"设置表单"的控件名;运行时要整体禁用、改动时要整体保存
 
 let lastRun = null;   // 最近一次收到的运行状态,用来判断要不要显示「重跑失败项」
-let armedKey = null;  // 「真实提交」需要点两次:这里记录哪个按钮已经点过第一次('start' | 'retry')
-let armTimer = null;  // 5 秒自动取消"上膛"的定时器编号
 ```
 
 ### 5.3 域名处理
@@ -1034,41 +1047,17 @@ async function retryTargets() {
 }
 ```
 
-### 5.6 开始 / 重跑 / 停止(含"点两次才真提交")
+### 5.6 开始 / 重跑 / 停止
 
 ```js
 /* ---------- 开始 / 重跑 / 停止 ---------- */
 
 function setHint(text) { el.hint.textContent = text || ''; }   // 设置提示文字
 
-function arm(key, n) {                             // "上膛":第一次点击真实提交时的状态
-  armedKey = key;                                  // 记下是哪个按钮上膛了
-  const btn = el[key];
-  btn.textContent = `再点一次:真实提交 ${n} 个`;     // 按钮文字变成二次确认
-  btn.classList.remove('primary');                 // 去掉蓝色
-  btn.classList.add('danger');                     // 变成红色警示
-  clearTimeout(armTimer);
-  armTimer = setTimeout(disarm, 5000); // 5 秒内不点第二次就自动取消
-  setHint('真实提交不可撤销,提交后你将无法再访问这些任务。');
-}
-
-function disarm() {                                // "解除上膛":恢复按钮原样
-  armedKey = null;
-  clearTimeout(armTimer);
-  el.start.textContent = '开始';
-  el.retry.textContent = '重跑失败项';
-  for (const b of [el.start, el.retry]) b.classList.remove('danger');
-  el.start.classList.add('primary');
-}
-
 async function launch(key, targets) {              // 真正发起运行;key 是 'start' 或 'retry'
   const form = readForm();
-  if (!targets.length) { disarm(); setHint(key === 'start' ? '没有找到匹配的标签页。' : '没有可重跑的标签页。'); return; }   // 没有目标就提示并结束
-
-  // 不是试运行,且这个按钮还没上膛 → 这次点击只是"上膛",不发送
-  if (!form.dryRun && armedKey !== key) { disarm(); arm(key, targets.length); return; }
-  disarm();                                        // 走到这里 = 试运行,或已经是第二次点击
-  setHint('');
+  if (!targets.length) { setHint(key === 'start' ? '没有找到匹配的标签页。' : '没有可重跑的标签页。'); return; }   // 没有目标就提示并结束
+  setHint('');                                     // 点一次就直接开始,没有二次确认
 
   try {
     const r = await chrome.runtime.sendMessage({   // 给后台发 START 消息
@@ -1084,7 +1073,7 @@ async function launch(key, targets) {              // 真正发起运行;key 是
 
 async function onStart() {                         // 点"开始"
   const form = readForm();
-  if (!form.anyHost && !form.host) { disarm(); setHint('先填域名,或勾选「所有网站」。'); return; }
+  if (!form.anyHost && !form.host) { setHint('先填域名,或勾选「所有网站」。'); return; }
   const { picked } = await getTargets(form);
   await launch('start', picked);
 }
@@ -1177,7 +1166,6 @@ async function focusTab(tabId) {
 /* ---------- 事件绑定 ---------- */
 
 async function onFormChange(e) {                   // 任何设置改动时执行
-  disarm();                                        // 取消"上膛"(改了设置,之前的二次确认作废)
   setHint('');
   if (e && e.target === el.host) el.host.dataset.edited = '1'; // 手动改过域名,下次打开不再自动覆盖
   el.host.disabled = el.anyHost.checked;
@@ -1234,7 +1222,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 2. **第一次使用务必按顺序**:
    1. 停在任意一个任务标签页上点扩展图标,"域名包含"会自动填好。
    2. 保持默认(勾选试运行、最多处理 1 个),点"开始"。结果显示"可提交"= 三步都点对了。
-   3. 取消"试运行",仍只处理 1 个,点"开始"后 5 秒内再点一次确认,这个任务会真的提交。
+   3. 取消"试运行",仍只处理 1 个,点"开始"(点一次就直接开始),这个任务会真的提交。
    4. 没问题再把"最多处理"改成 0(不限),并发数建议 5。
 3. **结果状态**:成功 / 可提交 / 失败 / 未知 / 跳过(含义见前文第 3、4 节)。连续 3 个失败自动停止。
    只处理网址里是 `/editor` 的任务页,主页等其他页面开始前就排除掉;结果列表显示网址里的任务名(`task_name`)。
@@ -1245,14 +1233,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
 ## 7. 全局小结:一次真实提交的完整时间线
 
 ```
-你点「开始」(第 1 次)       popup:按钮变红"再点一次:真实提交 N 个",5 秒倒计时
-你点「开始」(第 2 次)       popup → 后台:START {options, tabs}
+你点「开始」                 popup → 后台:START {options, tabs}
 后台 startRun               建 run,保存,开保活,按并发数启动 N 个 worker
 worker 取一个标签页         processItem:确认加载 → 注入 inject.js → 调用 window.__bs.run
 inject.js flow              找顶栏提交 → 点 → 等确认弹窗 → 确认下拉=质检通过
 inject.js                   发 PHASE(final-clicked) → 后台记下 finalClicked=true → 回执
 inject.js                   bs.locked=true → 点弹窗「提交」
-inject.js                   scanOutcome 反复扫描:成功弹窗 / 其他弹窗 / 报错提示 / 超时
+inject.js                   反复扫描:出现成功弹窗就算成功;报错只先记下,30 秒还没成功才报
 成功                        发 RESULT → 点「返回主页领取新任务」→ 页面跳转
 后台                        Promise.race 拿到结果 → setItem → 存储 → popup 实时重画
 全部完成                    run.state='done',关保活,最后保存

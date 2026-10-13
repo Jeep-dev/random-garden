@@ -129,31 +129,42 @@
     return t && b ? clip(t.textContent) + ':' + clip(b.textContent) : clip(d.textContent);
   };
 
+  // 成功的标志:出现「提交任务成功」弹窗,或带「返回主页领取新任务」按钮的弹窗
+  const findSuccess = () => findDialog(CFG.SUCCESS_TEXT) || findDialog(CFG.HOME_BTN);
+
+  // 找提交后的报错,没有返回 null。
+  // before = 点最终提交前就开着的弹窗(比如「任务基本信息」),它们不是提交的结果,不算
   const ERROR_WORDS = /失败|错误|异常|无法|不能|缺少|未通过|请先|超时|不允许|没有权限/;
-  function scanOutcome(confirmDialog) {
-    // 1. 成功弹窗
-    if (findDialog(CFG.SUCCESS_TEXT)) return { status: 'success' };
-
-    // 2. 出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
-    const other = visibleDialogs().find(d =>
+  function scanError(confirmDialog, before) {
+    // 1. 新出现了别的弹窗(比如二次确认、错误弹窗):不替人做决定,当作需要人处理
+    const other = visibleDialogs().find(d => !before.includes(d) &&
       d !== confirmDialog && !d.contains(confirmDialog) && !confirmDialog.contains(d));
-    if (other) return { status: 'error', message: '出现了另一个弹窗:' + dialogText(other) };
+    if (other) return '出现了另一个弹窗:' + dialogText(other);
 
-    // 3. 顶部提示 / 通知
+    // 2. 顶部提示 / 通知
     for (const t of document.querySelectorAll('.ant-message-notice, .ant-notification-notice')) {
       if (!isVisible(t)) continue;
       const text = clip(t.textContent);
       if (!text) continue;
       const iconErr = t.querySelector(
         '.anticon-close-circle, .anticon-exclamation-circle, .anticon-warning, [class*="-error"], [class*="-warning"]');
-      if (iconErr || ERROR_WORDS.test(text)) return { status: 'error', message: text };
+      if (iconErr || ERROR_WORDS.test(text)) return text;
     }
 
-    // 4. 确认弹窗里的校验提示
+    // 3. 确认弹窗里的校验提示
     for (const a of confirmDialog.querySelectorAll('[role="alert"], .ant-form-item-explain-error, .ant-alert-error')) {
-      if (isVisible(a) && clip(a.textContent)) return { status: 'error', message: clip(a.textContent) };
+      if (isVisible(a) && clip(a.textContent)) return clip(a.textContent);
     }
     return null;
+  }
+
+  // 成功:先把结果报给后台,再点「返回主页领取新任务」(点完页面会跳走,脚本随之消失)
+  async function goHome(message) {
+    const done = { status: 'success', afterFinal: true, message };
+    await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);
+    const home = findButton(CFG.HOME_BTN, { scope: findSuccess() || document });
+    if (home) realClick(home);
+    return home ? done : { ...done, message: message + '(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
   }
 
   /* ---------------- 主流程 ---------------- */
@@ -171,6 +182,13 @@
       if (e.message === '__abort') throw e;
       return { status: 'skipped', message: '没找到顶栏「' + CFG.TOP_BTN + '」按钮(不是任务页,或页面还没加载完)' };
     }
+
+    // 页面上还开着成功弹窗 = 之前已经提交成功了(比如上次被误判成失败),绝不能再提交一次
+    if (findSuccess()) {
+      if (dryRun) return { status: 'skipped', message: '之前已经提交成功(试运行,没有点任何东西)' };
+      return goHome('之前已经提交成功,这次只点了「' + CFG.HOME_BTN + '」');
+    }
+
     if (CFG.READY_TEXT) {
       try {
         await waitFor(() => document.body && document.body.textContent.includes(CFG.READY_TEXT),
@@ -224,25 +242,25 @@
     if (!okBtn || isDisabled(okBtn)) throw new Error('确认弹窗里的「' + CFG.OK_BTN + '」按钮不可用');
     step('第 3 步:点击确认弹窗的「' + CFG.OK_BTN + '」');
     await send({ type: 'PHASE', phase: 'final-clicked', text: '已点最终提交,等待结果…' }); // 先告诉后台,再点
+    const before = visibleDialogs();
     bs.locked = true;
     realClick(okBtn);
 
-    // 5. 等结果
-    let out;
-    try {
-      out = await waitFor(() => scanOutcome(dialog), { timeout: T.final, label: '提交结果' });
-    } catch {
+    // 5. 等结果:只要成功弹窗出来就是成功。网络慢时它会晚到,所以看到报错也只先记下,继续等满 T.final
+    let error = null;
+    const ok = await waitFor(() => {
+      if (findSuccess()) return true;
+      error = scanError(dialog, before) || error;
+      return false;
+    }, { timeout: T.final, label: '提交结果' }).catch(() => false);
+    if (!ok && error) return { status: 'error', afterFinal: true, message: '提交后报错:' + error + '。请到该标签页确认,不要重试' };
+    if (!ok) {
       return { status: 'unknown', afterFinal: true,
         message: '点了最终提交,' + T.final / 1000 + ' 秒内没出现成功或错误提示。请手动确认任务状态,不要重试' };
     }
-    if (out.status === 'error') return { status: 'error', afterFinal: true, message: '提交后报错:' + out.message };
 
-    // 6. 成功:先把结果报给后台,再点「返回主页领取新任务」(点完页面会跳走,脚本随之消失)
-    const done = { status: 'success', afterFinal: true, message: '已提交成功' };
-    await Promise.race([send({ type: 'RESULT', result: done }), new Promise(r => setTimeout(r, 3000))]);
-    const home = findButton(CFG.HOME_BTN, { scope: findDialog(CFG.SUCCESS_TEXT) || document });
-    if (home) realClick(home);
-    return home ? done : { ...done, message: '已提交成功(没找到「' + CFG.HOME_BTN + '」按钮,请手动关闭弹窗)' };
+    // 6. 成功
+    return goHome('已提交成功');
   }
 
   async function run(opts) {

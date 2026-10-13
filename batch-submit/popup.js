@@ -28,8 +28,6 @@ const el = {
 const FORM_FIELDS = ['dry', 'scope', 'limit', 'concurrency', 'host', 'anyHost'];
 
 let lastRun = null;   // 最近一次收到的运行状态,用来判断要不要显示「重跑失败项」
-let armedKey = null;  // 「真实提交」需要点两次:这里记录哪个按钮已经点过第一次('start' | 'retry')
-let armTimer = null;
 
 /* ---------- 域名 ---------- */
 
@@ -147,32 +145,9 @@ async function retryTargets() {
 
 function setHint(text) { el.hint.textContent = text || ''; }
 
-function arm(key, n) {
-  armedKey = key;
-  const btn = el[key];
-  btn.textContent = `再点一次:真实提交 ${n} 个`;
-  btn.classList.remove('primary');
-  btn.classList.add('danger');
-  clearTimeout(armTimer);
-  armTimer = setTimeout(disarm, 5000); // 5 秒内不点第二次就自动取消
-  setHint('真实提交不可撤销,提交后你将无法再访问这些任务。');
-}
-
-function disarm() {
-  armedKey = null;
-  clearTimeout(armTimer);
-  el.start.textContent = '开始';
-  el.retry.textContent = '重跑失败项';
-  for (const b of [el.start, el.retry]) b.classList.remove('danger');
-  el.start.classList.add('primary');
-}
-
 async function launch(key, targets) {
   const form = readForm();
-  if (!targets.length) { disarm(); setHint(key === 'start' ? '没有找到匹配的标签页。' : '没有可重跑的标签页。'); return; }
-
-  if (!form.dryRun && armedKey !== key) { disarm(); arm(key, targets.length); return; } // 第一次点击只是「上膛」
-  disarm();
+  if (!targets.length) { setHint(key === 'start' ? '没有找到匹配的标签页。' : '没有可重跑的标签页。'); return; }
   setHint('');
 
   try {
@@ -189,7 +164,7 @@ async function launch(key, targets) {
 
 async function onStart() {
   const form = readForm();
-  if (!form.anyHost && !form.host) { disarm(); setHint('先填域名,或勾选「所有网站」。'); return; }
+  if (!form.anyHost && !form.host) { setHint('先填域名,或勾选「所有网站」。'); return; }
   const { picked } = await getTargets(form);
   await launch('start', picked);
 }
@@ -272,7 +247,6 @@ async function focusTab(tabId) {
 /* ---------- 事件绑定 ---------- */
 
 async function onFormChange(e) {
-  disarm();
   setHint('');
   if (e && e.target === el.host) el.host.dataset.edited = '1'; // 手动改过域名,下次打开不再自动覆盖
   el.host.disabled = el.anyHost.checked;
