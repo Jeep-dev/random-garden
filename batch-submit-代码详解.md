@@ -1,6 +1,6 @@
 # 批量提交助手(batch-submit)代码逐行详解(小白版)
 
-> 对应版本:v0.3.1。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
+> 对应版本:v0.3.2。本文把 `batch-submit` 目录下每个文件的每一行都解释了一遍。
 > 这是我读代码后写的说明,**没有在真实的标注平台上运行验证过**,点击流程是否适配你们的平台,以首次试运行的结果为准。
 
 ---
@@ -53,7 +53,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "在标注平台的多个任务标签页中批量执行提交流程:提交 → 选择「质检通过」→ 确认提交 → 返回主页",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
@@ -67,7 +67,7 @@ JSON 格式不允许写注释,所以这里用表格逐行解释。
 |---|---|
 | `"manifest_version": 3` | 使用第 3 代扩展规范(目前 Chrome/Edge 的标准)。它规定后台脚本必须是会被回收的 service worker |
 | `"name"` | 扩展显示的名字 |
-| `"version": "0.3.1"` | 版本号,你自己用来区分新旧 |
+| `"version": "0.3.2"` | 版本号,你自己用来区分新旧 |
 | `"description"` | 扩展管理页里显示的一句话介绍 |
 | `"minimum_chrome_version": "102"` | 要求浏览器版本 ≥ 102。因为代码用到了 `chrome.storage.session`,它从 102 才有 |
 | `"permissions": ["scripting", "storage"]` | 申请两项能力:`scripting` = 能往网页里注入脚本;`storage` = 能用浏览器的存储 |
@@ -959,10 +959,15 @@ function tabName(tab) {
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
 // 不是任务页的(主页等)先排除掉,不计入处理上限
+// 顺序:从你当前所在的标签页开始往右,到头后再回到最左边,处理当前标签页左边的
 async function getTargets(form) {
+  const order = (a, b) => (a.windowId - b.windowId) || (a.index - b.index);   // 排序规则:先按窗口,再按标签页位置(从左到右)
   const all = (await chrome.tabs.query({})).filter(t => matches(t, form));   // 查所有窗口的所有标签页,按域名过滤
-  all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));   // 按窗口、再按标签页位置排序(从左到右)
-  const tasks = all.filter(isTaskPage);            // 只留下任务页(去掉主页等)
+  all.sort(order);
+  let tasks = all.filter(isTaskPage);              // 只留下任务页(去掉主页等)
+  const [cur] = await chrome.tabs.query({ active: true, currentWindow: true });   // 你当前所在的标签页
+  const k = cur ? tasks.findIndex(t => order(t, cur) >= 0) : -1;   // 第一个"在当前标签页位置或其右边"的任务页
+  if (k > 0) tasks = [...tasks.slice(k), ...tasks.slice(0, k)];   // 把它之前的(左边的)挪到队尾:先右后左
   const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;    // limit>0 就只取前 limit 个,0 表示全要
   return { all, tasks, picked };                   // all=匹配到的全部;tasks=其中的任务页;picked=本次实际处理的
 }
@@ -1136,10 +1141,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 这是给人看的文字说明,不是代码,这里只概括要点:
 
 1. **安装**:解压得到 `batch-submit` 文件夹 → 地址栏打开 `edge://extensions`(Chrome 用 `chrome://extensions`)→ 开启「开发人员模式」→「加载解压缩的扩展」→ 选这个文件夹。文件夹要放在固定位置,不能删、不能移动。
-2. **界面**:域名筛选(留空 = 全部域名)、处理上限(默认 1,0 = 不限)、并发数(默认 1)、试运行模式(每次打开都不勾选)。处理范围固定是所有窗口的全部标签页,只处理 `/editor` 任务页。点「开始执行」后扩展窗口立刻关闭。
-3. **建议首次流程**:先勾选试运行处理 1 个,看到「预检通过」;再取消试运行真实提交 1 个;没问题后把处理上限改成 0。
-4. **结果状态**:成功 / 预检通过 / 失败 / 待确认 / 已跳过(含义见前文第 3、4 节)。连续 3 项失败自动终止。
-5. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页重新加载该扩展。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
+2. **处理顺序**:从当前所在的标签页开始往右,到头后再处理左边的。
+3. **界面**:域名筛选(留空 = 全部域名)、处理上限(默认 1,0 = 不限)、并发数(默认 1)、试运行模式(每次打开都不勾选)。处理范围固定是所有窗口的全部标签页,只处理 `/editor` 任务页。点「开始执行」后扩展窗口立刻关闭。
+4. **建议首次流程**:先勾选试运行处理 1 个,看到「预检通过」;再取消试运行真实提交 1 个;没问题后把处理上限改成 0。
+5. **结果状态**:成功 / 预检通过 / 失败 / 待确认 / 已跳过(含义见前文第 3、4 节)。连续 3 项失败自动终止。
+6. **文案不一致怎么办**:改 `inject.js` 最上面的 `CFG`,然后在扩展管理页重新加载该扩展。页面上没有"任务有效"字样,就把 `READY_TEXT` 改成 `''` 关闭这个检查。
 
 ---
 

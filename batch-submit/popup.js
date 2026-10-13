@@ -77,10 +77,15 @@ function tabName(tab) {
 // 目标标签页在 popup 里确定,再把 id 发给后台。
 // 这样「你看到的数量」和「实际处理的」一定一致(后台没有「当前窗口」的概念)
 // 不是任务页的(主页等)先排除掉,不计入处理上限
+// 顺序:从你当前所在的标签页开始往右,到头后再回到最左边,处理当前标签页左边的
 async function getTargets(form) {
+  const order = (a, b) => (a.windowId - b.windowId) || (a.index - b.index);
   const all = (await chrome.tabs.query({})).filter(t => matches(t, form));
-  all.sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));
-  const tasks = all.filter(isTaskPage);
+  all.sort(order);
+  let tasks = all.filter(isTaskPage);
+  const [cur] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const k = cur ? tasks.findIndex(t => order(t, cur) >= 0) : -1;
+  if (k > 0) tasks = [...tasks.slice(k), ...tasks.slice(0, k)];
   const picked = form.limit > 0 ? tasks.slice(0, form.limit) : tasks;
   return { all, tasks, picked };
 }
