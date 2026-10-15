@@ -4,6 +4,7 @@
 //
 // 范围固定是所有窗口的所有标签页;域名默认不限,填了才只处理该域名下的。
 // 点「开始」后 popup 立刻关掉,不挡视线;再点扩展图标就能看到进度。
+// 后台直接调接口提交,不切换、不操作标签页,所以页面卡住或没加载完也能处理。
 
 // 会保存下来的设置。试运行不保存,每次打开都是不勾选,只有你勾了才试运行
 const DEFAULTS = { host: '', limit: 1, concurrency: 1 };
@@ -65,8 +66,8 @@ function matches(tab, form) {
   return !form.host || u.hostname.toLowerCase().includes(form.host);
 }
 
-// 任务页的网址是 …/editor?…,主页是 …/operator/home。只有任务页才处理
-const isTaskPage = tab => new URL(tab.url).pathname.startsWith('/editor');
+// 任务页的网址是 …/editor?…&task=…,主页是 …/operator/home。只有带 task 参数的任务页才处理
+const isTaskPage = tab => { const u = new URL(tab.url); return u.pathname.startsWith('/editor') && u.searchParams.has('task'); };
 
 // 标签页标题都是「LabelWise 标注平台」分不出来,所以用网址里的 task_name 当名字
 function tabName(tab) {
@@ -101,7 +102,7 @@ async function retryTargets() {
   const out = [];
   for (const it of items) {
     const tab = await chrome.tabs.get(it.tabId).catch(() => null);
-    if (tab) out.push({ id: tab.id, title: tabName(tab) || it.title });
+    if (tab) out.push({ id: tab.id, title: tabName(tab) || it.title, url: tab.url });
   }
   return out;
 }
@@ -120,7 +121,7 @@ async function launch(key, targets) {
     const r = await chrome.runtime.sendMessage({
       type: 'START',
       options: { dryRun: form.dryRun, concurrency: form.concurrency },
-      tabs: targets.map(t => ({ id: t.id, title: tabName(t) || '(无标题)' })),
+      tabs: targets.map(t => ({ id: t.id, title: tabName(t) || '(无标题)', url: t.url })),
     });
     if (r && r.ok === false) { setHint(r.error || '启动失败'); return; }
     window.close();

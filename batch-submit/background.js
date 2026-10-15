@@ -1,24 +1,35 @@
-// background.js —— 调度:同时处理 N 个标签页,把每页的状态写进 chrome.storage.session 给 popup 显示。
+// background.js —— 调度:同时处理 N 个任务,把每个任务的状态写进 chrome.storage.session 给 popup 显示。
+// 纯接口提交:不注入页面、不点按钮、不切标签页,页面没加载完甚至标签页休眠都不影响。
+//
+// 每个任务的流程(task 取自标签页网址里的 task 参数)
+//   1. GET  /api/v1/task/{task}                          任务详情:必须是「质检」环节、状态 Working
+//   2. GET  /api/v1/workflow/{wf}/actions/               按名字找到「质检通过」的 action id
+//      GET  /api/v1/workflow/{wf}/nodes/{node}           确认该 action 属于当前环节
+//   3. GET  /api/v1/task/data/{task}                     取 labeling_data(质检时只读,原样提交)
+//   4. POST /api/v1/task/submit                          { action, task_id, labeling_data, skip_acceptance_for_unmodified_tasks:false }
+//   5. GET  /api/v1/task/{task}                          复查:环节或状态变了才算成功
 //
 // 消息约定
-//   popup → 后台  { type:'START', options:{dryRun, concurrency}, tabs:[{id,title}] }   开始
-//                 { type:'STOP' }                                                      停止(已点最终提交的页面不受影响)
-//   页面 → 后台   { type:'PHASE', text, phase? }   进度文字;phase:'final-clicked' 表示马上要点最终提交
-//                 { type:'RESULT', result }        成功结果(页面随后会跳走,所以要先报)
+//   popup → 后台  { type:'START', options:{dryRun, concurrency}, tabs:[{id,title,url}] }   开始
+//                 { type:'STOP' }                                                          停止(已发出提交的任务不受影响)
 //   存储 'run'    { state:'running'|'done'|'stopped', total, done, counts, note, dryRun,
-//                   items:[{tabId,title,status,message,afterFinal}] }
+//                   items:[{tabId,title,url,status,message,afterFinal}] }
 
 'use strict';
 
+const CFG = {
+  ACTION_NAME: '质检通过',                 // 要执行的操作名(和页面下拉框里的文字一致)
+  NODE_TYPE: 'quality_inspection',         // 只处理这个环节的任务
+  WORKING: 'Working',                      // 只处理这个状态的任务,其他状态(比如已提交)跳过
+  HOME_PATH: '/operator/home',             // 提交成功后标签页跳到这里
+  REQUEST_TIMEOUT_MS: 30 * 1000,
+};
 const MAX_CONSECUTIVE_FAILS = 3;            // 连续失败这么多个就整体停下
-const TAB_WATCHDOG_MS = 4 * 60 * 1000;      // 单个标签页最长处理时间
-const LOAD_WAIT_MS = 60 * 1000;             // 等标签页加载完的最长时间
 
 let run = null;                              // 当前运行状态(内存里一份,同时写进 storage)
 let stopRequested = false;
 let stopReason = '';
 let keepAliveTimer = null;
-const waiters = new Map();                   // tabId -> { finalClicked, resolve }
 
 const TERMINAL = new Set(['success', 'ready', 'error', 'unknown', 'skipped']);
 
@@ -69,10 +80,6 @@ function setItem(item, patch) {
   await save();
 })();
 
-/* ---------- 工具 ---------- */
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 function startKeepAlive() {
   stopKeepAlive();
   // 有任务在跑时,定期调用一个扩展 API,避免后台脚本因空闲被回收
@@ -80,69 +87,172 @@ function startKeepAlive() {
 }
 function stopKeepAlive() { clearInterval(keepAliveTimer); keepAliveTimer = null; }
 
-// 确保标签页已经加载:被浏览器休眠(discarded)的先刷新;还在加载的等它加载完
-async function ensureLoaded(tabId) {
-  let tab = await chrome.tabs.get(tabId);
-  if (tab.discarded) await chrome.tabs.reload(tabId);
-  const t0 = Date.now();
-  for (;;) {
-    tab = await chrome.tabs.get(tabId);
-    if (tab.status === 'complete' && !tab.discarded) return;
-    if (Date.now() - t0 > LOAD_WAIT_MS) return; // 单页应用往往早就能用了,让页面里的脚本自己等元素
-    await sleep(500);
+/* ---------- 登录令牌 ---------- */
+
+// 注入页面执行(必须自包含):从 localStorage / sessionStorage / cookie 里找登录令牌(JWT),取过期时间最晚的那个
+function findToken() {
+  const re = /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+  const texts = [document.cookie];
+  for (const s of [localStorage, sessionStorage]) {
+    try { for (let i = 0; i < s.length; i++) texts.push(s.getItem(s.key(i)) || ''); } catch (e) { /* 忽略 */ }
   }
+  let best = null;
+  for (const t of texts) for (const tok of t.match(re) || []) {
+    let exp = 0;
+    try { exp = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || 0; } catch (e) { continue; }
+    if (!best || exp > best.exp) best = { token: tok, exp };
+  }
+  return best;
 }
 
-/* ---------- 处理单个标签页 ---------- */
-
-async function processItem(item, options) {
-  const tabId = item.tabId;
-  await setItem(item, { status: 'running', message: '准备中' });
-
-  let tab;
-  try { tab = await chrome.tabs.get(tabId); }
-  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }
-  if (!/^https?:/i.test(tab.url || '')) {
-    return setItem(item, { status: 'skipped', message: '非网页标签页,无法处理' });
+// 令牌只存在浏览器会话里,有效期内复用;依次在任务页里找,休眠的标签页排在最后
+async function getToken(tabIds) {
+  const now = Date.now() / 1000;
+  const { bsToken } = await chrome.storage.session.get('bsToken');
+  if (bsToken && (!bsToken.exp || bsToken.exp > now + 60)) return bsToken.token;
+  const tabs = (await Promise.all(tabIds.map(id => chrome.tabs.get(id).catch(() => null)))).filter(Boolean);
+  tabs.sort((a, b) => (a.discarded ? 1 : 0) - (b.discarded ? 1 : 0));
+  for (const tab of tabs) {
+    try {
+      const [g] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken });
+      const t = g && g.result;
+      if (t && (!t.exp || t.exp > now + 60)) { await chrome.storage.session.set({ bsToken: t }); return t.token; }
+    } catch { /* 换下一个标签页 */ }
   }
+  return '';
+}
 
-  // 切到正在处理的标签页,让你看到它在动(并发时停在最新开始的那个)
-  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+/* ---------- 接口 ---------- */
 
-  try { await ensureLoaded(tabId); }
-  catch { return setItem(item, { status: 'skipped', message: '标签页已关闭' }); }
+class ApiError extends Error {
+  constructor(message, status) { super(message); this.status = status; }
+}
 
-  const waiter = { finalClicked: false, resolve: null };
-  const resultMsg = new Promise(resolve => { waiter.resolve = resolve; });
-  waiters.set(tabId, waiter);
+// 从返回内容里挑出服务器给的说明文字
+function serverMsg(body) {
+  if (!body) return '';
+  if (typeof body === 'string') return body.slice(0, 200);
+  const m = body.message || body.msg || body.detail || body.error;
+  return typeof m === 'string' ? m : m ? JSON.stringify(m).slice(0, 200) : '';
+}
 
-  const watchdog = new Promise(resolve => setTimeout(() => resolve({ __watchdog: true }), TAB_WATCHDOG_MS));
-  const injected = (async () => {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['inject.js'] });
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: opts => window.__bs.run(opts),
-      args: [{ dryRun: !!options.dryRun }],
+async function api(origin, token, method, path, data) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), CFG.REQUEST_TIMEOUT_MS);
+  let r;
+  try {
+    r = await fetch(origin + path, {
+      method,
+      headers: { Accept: 'application/json', Authorization: 'Bearer ' + token, ...(data ? { 'Content-Type': 'application/json' } : {}) },
+      body: data ? JSON.stringify(data) : undefined,
+      signal: ctrl.signal,
     });
-    return r && r.result;
-  })().catch(e => ({ __error: e && e.message ? e.message : String(e) }));
-
-  let res = await Promise.race([resultMsg, injected, watchdog]);
-  waiters.delete(tabId);
-
-  // 整理结果。凡是已经点过最终提交、又没拿到明确结果的,一律「待确认」
-  const after = waiter.finalClicked;
-  if (!res || res.__error || res.__watchdog || !TERMINAL.has(res.status)) {
-    let why;
-    if (!res) why = '页面在处理过程中跳转或关闭,未获取到结果';
-    else if (res.__watchdog) why = '处理超时(超过 ' + TAB_WATCHDOG_MS / 60000 + ' 分钟)';
-    else if (res.__error) why = res.__error;
-    else why = '页面返回结果无法识别';
-    res = after
-      ? { status: 'unknown', afterFinal: true, message: why + '。已执行最终提交,请人工核实提交状态,切勿重复提交' }
-      : { status: 'error', message: why };
+  } catch (e) {
+    throw new ApiError(e.name === 'AbortError' ? '请求超时(' + CFG.REQUEST_TIMEOUT_MS / 1000 + ' 秒)' : '网络错误:' + e.message, 0);
+  } finally {
+    clearTimeout(timer);
   }
-  await setItem(item, { status: res.status, message: res.message || '', afterFinal: !!res.afterFinal });
+  const text = await r.text();
+  let body = text;
+  try { body = text ? JSON.parse(text) : null; } catch { /* 不是 JSON 就保留原文 */ }
+  if (r.status === 401 || r.status === 403) {
+    await chrome.storage.session.remove('bsToken');
+    throw new ApiError('登录令牌失效或无权限(' + r.status + '),请刷新任意任务页后重试', r.status);
+  }
+  if (!r.ok) throw new ApiError('接口返回 ' + r.status + (serverMsg(body) ? ':' + serverMsg(body) : ''), r.status);
+  return body;
+}
+
+// 「质检通过」的 action id 按工作流 + 环节缓存,同一次运行里只查一次
+const actionCache = new Map();
+function findAction(origin, token, wf, node) {
+  const key = origin + '|' + wf + '|' + node;
+  if (!actionCache.has(key)) {
+    const p = (async () => {
+      const [actions, nodeInfo] = await Promise.all([
+        api(origin, token, 'GET', `/api/v1/workflow/${wf}/actions/`),
+        api(origin, token, 'GET', `/api/v1/workflow/${wf}/nodes/${node}`),
+      ]);
+      const list = Array.isArray(actions) ? actions : (actions && actions.data) || [];
+      const allowed = Object.keys((nodeInfo && nodeInfo.action_map) || {});
+      const hit = list.find(a => a && a.name === CFG.ACTION_NAME);
+      if (!hit) throw new Error('工作流里没有「' + CFG.ACTION_NAME + '」操作(现有:' + list.map(a => a && a.name).join('、') + ')');
+      if (allowed.length && !allowed.includes(hit._id)) throw new Error('当前环节不能执行「' + CFG.ACTION_NAME + '」');
+      return hit._id;
+    })();
+    actionCache.set(key, p);
+    p.catch(() => actionCache.delete(key)); // 查失败的不缓存,下一个任务重新查
+  }
+  return actionCache.get(key);
+}
+
+/* ---------- 处理单个任务 ---------- */
+
+async function processItem(item, options, token) {
+  await setItem(item, { status: 'running', message: '读取任务信息' });
+
+  let u;
+  try { u = new URL(item.url); } catch { return setItem(item, { status: 'skipped', message: '网址无法识别' }); }
+  const task = u.searchParams.get('task');
+  if (!task) return setItem(item, { status: 'skipped', message: '网址里没有 task 参数' });
+  const origin = u.origin;
+  const call = (method, path, data) => api(origin, token, method, path, data);
+
+  // 1. 前置检查:不是质检环节 / 不在作业中(比如已经提交过)就什么都不做
+  let before;
+  try { before = await call('GET', `/api/v1/task/${encodeURIComponent(task)}`); }
+  catch (e) { return setItem(item, { status: 'error', message: '读取任务失败:' + e.message }); }
+  if (before.workflow_node_type !== CFG.NODE_TYPE) {
+    return setItem(item, { status: 'skipped', message: '当前环节是「' + (before.workflow_node_type || '未知') + '」,不是质检,未执行操作' });
+  }
+  if (before.status !== CFG.WORKING) {
+    return setItem(item, { status: 'skipped', message: '任务状态是「' + (before.status || '未知') + '」,不是作业中(可能已提交),未执行操作' });
+  }
+  if (before.clip_valid === false) return setItem(item, { status: 'skipped', message: '任务无效(clip_valid=false),未执行操作' });
+
+  // 2. 找「质检通过」的 action;3. 取标注数据
+  let action, data;
+  try {
+    await setItem(item, { message: '读取标注数据' });
+    [action, data] = await Promise.all([
+      findAction(origin, token, before.workflow_id, before.workflow_node_id),
+      call('GET', `/api/v1/task/data/${encodeURIComponent(task)}`),
+    ]);
+  } catch (e) { return setItem(item, { status: 'error', message: e.message }); }
+  const labeling = data && data.labeling_data;
+  if (!labeling || typeof labeling !== 'object') return setItem(item, { status: 'error', message: '没有读到标注数据(labeling_data 为空),未提交' });
+
+  if (options.dryRun) {
+    return setItem(item, { status: 'ready', message: '预检通过(试运行,未提交):质检环节、作业中,将以「' + CFG.ACTION_NAME + '」提交' });
+  }
+  if (stopRequested) return setItem(item, { status: 'skipped', message: '已停止,未提交' });
+
+  // 4. 提交。从这一刻起不再响应「停止」,也不会重试
+  await setItem(item, { message: '正在提交', afterFinal: true });
+  let submitErr = null;
+  try {
+    await call('POST', '/api/v1/task/submit', {
+      action, task_id: before.id || task, labeling_data: labeling, skip_acceptance_for_unmodified_tasks: false,
+    });
+  } catch (e) { submitErr = e; }
+
+  // 5. 复查任务:环节或状态变了才算真正提交成功
+  let after = null;
+  try { after = await call('GET', `/api/v1/task/${encodeURIComponent(task)}`); } catch { /* 复查失败按下面的规则处理 */ }
+  const moved = after && (after.workflow_node_id !== before.workflow_node_id || after.status !== before.status);
+
+  if (moved) {
+    chrome.tabs.update(item.tabId, { url: origin + CFG.HOME_PATH }).catch(() => {});
+    return setItem(item, { status: 'success', message: submitErr ? '提交成功(提交请求报错但任务已流转:' + submitErr.message + ')' : '提交成功' });
+  }
+  // 服务器明确拒绝(4xx)且任务没动 = 没提交上
+  if (submitErr && submitErr.status >= 400 && submitErr.status < 500 && after) {
+    return setItem(item, { status: 'error', message: '服务器拒绝提交:' + submitErr.message });
+  }
+  return setItem(item, {
+    status: 'unknown',
+    message: (submitErr ? '提交请求出错:' + submitErr.message + '。' : '服务器已接收提交,但任务状态未变化。') + '请人工核实提交状态,切勿重复提交',
+  });
 }
 
 /* ---------- 一次运行 ---------- */
@@ -150,17 +260,33 @@ async function processItem(item, options) {
 async function startRun({ options, tabs }) {
   stopRequested = false;
   stopReason = '';
-  const items = tabs.map(t => ({ tabId: t.id, title: t.title || '(无标题)', status: 'pending', message: '', afterFinal: false }));
+  actionCache.clear();
+  const items = tabs.map(t => ({ tabId: t.id, title: t.title || '(无标题)', url: t.url || '', status: 'pending', message: '', afterFinal: false }));
   run = { state: 'running', total: items.length, done: 0, counts: {}, note: '', dryRun: !!options.dryRun, items };
   await save();
   startKeepAlive();
+
+  const token = await getToken(items.map(it => it.tabId));
+  if (!token) {
+    for (const it of items) { it.status = 'error'; it.message = '所有任务页里都没找到有效的登录令牌:请刷新任意任务页或重新登录后重试'; }
+    run.state = 'stopped';
+    run.note = '未找到登录令牌';
+    stopKeepAlive();
+    await save();
+    return;
+  }
 
   const queue = items.slice();
   let fails = 0;
   const worker = async () => {
     while (!stopRequested && queue.length) {
       const item = queue.shift();
-      await processItem(item, options);
+      try { await processItem(item, options, token); }
+      catch (e) {
+        await setItem(item, item.afterFinal
+          ? { status: 'unknown', message: e.message + '(已发出提交,请人工核实,切勿重复提交)' }
+          : { status: 'error', message: e.message });
+      }
       if (item.status === 'error' || item.status === 'unknown') {
         if (++fails >= MAX_CONSECUTIVE_FAILS) {
           stopRequested = true;
@@ -183,19 +309,6 @@ async function startRun({ options, tabs }) {
   await save();
 }
 
-async function stopAll() {
-  if (!run || run.state !== 'running') return;
-  stopRequested = true;
-  // 通知正在跑的页面:还没点最终提交的就地中止
-  for (const it of run.items) {
-    if (it.status !== 'running') continue;
-    chrome.scripting.executeScript({
-      target: { tabId: it.tabId },
-      func: () => { if (window.__bs) window.__bs.abort = true; },
-    }).catch(() => {});
-  }
-}
-
 /* ---------- 消息入口 ---------- */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -211,26 +324,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'STOP') {
-    stopAll();
-    sendResponse({ ok: true });
-    return;
-  }
-
-  // 以下消息来自被注入的页面
-  const tabId = sender.tab && sender.tab.id;
-  const waiter = tabId != null && waiters.get(tabId);
-  if (!waiter || !run) { sendResponse({ ok: false }); return; }
-  const item = run.items.find(i => i.tabId === tabId);
-
-  if (msg.type === 'PHASE') {
-    if (msg.phase === 'final-clicked') waiter.finalClicked = true; // 先记下,再回执,页面收到回执后才点
-    if (item && msg.text) setItem(item, { message: msg.text });
-    sendResponse({ ok: true });
-    return;
-  }
-
-  if (msg.type === 'RESULT') {
-    waiter.resolve(msg.result);
+    if (run && run.state === 'running') stopRequested = true; // 还没发出提交的任务就地停下
     sendResponse({ ok: true });
   }
 });
