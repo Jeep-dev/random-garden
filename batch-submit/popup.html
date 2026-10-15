@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>批量提交助手</title>
+<style>
+  :root { color-scheme: dark; }
+  body { width: 380px; margin: 0; padding: 12px 14px 14px; font: 13px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; color: #e6e9ee; background: #1b1f26; }
+  [hidden] { display: none !important; }
+  h1 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+  .dim { color: #98a2b3; }
+  input[type="number"], input[type="text"] { background: #11141a; color: inherit; border: 1px solid #2c333d; border-radius: 6px; padding: 2px 6px; font: inherit; }
+  input[type="number"] { width: 56px; }
+  input[type="text"] { flex: 1; min-width: 0; }
+  button { border: 1px solid #2c333d; background: transparent; color: inherit; border-radius: 6px; padding: 5px 14px; cursor: pointer; font: inherit; }
+  button.primary { background: #2f8cff; border-color: #2f8cff; color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  hr { border: 0; border-top: 1px solid #2c333d; margin: 10px 0; }
+  progress { width: 100%; height: 8px; margin: 6px 0; }
+  ul { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+  li { padding: 4px 8px; margin-bottom: 3px; border-radius: 6px; background: #232a33; cursor: pointer; display: grid; grid-template-columns: 60px 1fr; gap: 6px; }
+  li small { grid-column: 2; color: #98a2b3; word-break: break-all; }
+  li .t { word-break: break-all; }
+  li.error .s { color: #ff6b6f; } li.unknown .s, li.skipped .s { color: #f2b84b; }
+  li.success .s, li.ready .s { color: #5fd3a0; } li.running .s { color: #2f8cff; }
+</style>
+</head>
+<body>
+  <h1>批量提交助手</h1>
+
+  <div class="row">域名筛选 <input type="text" id="host" placeholder="留空表示全部域名" spellcheck="false" autocomplete="off"></div>
+  <div class="row">
+    处理上限 <input type="number" id="limit" min="0" max="500"><span class="dim">(0 表示不限)</span>
+    并发数 <input type="number" id="concurrency" min="1" max="10">
+  </div>
+  <label class="row"><input type="checkbox" id="dry"> 试运行模式(执行至最终提交前停止,不实际提交)</label>
+  <div class="row dim" id="count">正在检测任务页</div>
+
+  <div class="row">
+    <button id="start" class="primary">开始执行</button>
+    <button id="retry" hidden title="仅重试最终提交前失败的标签页;提交后失败或待确认的不会重试">重试失败项</button>
+    <button id="stop" hidden>停止</button>
+    <button id="clear">清空记录</button>
+  </div>
+  <div class="dim" id="hint"></div>
+
+  <hr>
+  <div id="summary" class="dim">暂无执行记录</div>
+  <progress id="bar" value="0" max="1"></progress>
+  <ul id="list"></ul>
+
+  <script src="popup.js"></script>
+</body>
+</html>

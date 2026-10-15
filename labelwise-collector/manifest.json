@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "LabelWise 任务信息采集",
+  "version": "1.8.2",
+  "description": "一键提取所有 LabelWise 标签页的 总帧数 / data_id / 任务名称 / 页面URL，复制后直接粘贴到 WPS 表格",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_title": "采集 LabelWise 标签页",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
