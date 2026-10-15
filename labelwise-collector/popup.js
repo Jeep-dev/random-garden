@@ -26,6 +26,8 @@ function explainErr(m) {
     return 'Edge 禁止扩展在此网站运行：在该标签页点地址栏右边的拼图图标，打开「允许在 … 使用扩展」，再点「重新读取」。';
   if (/Cannot access contents|must request permission/i.test(m))
     return '扩展没有此网站的访问权限：点「授权访问网站」，或在 edge://extensions → 详细信息 → 网站访问权限 选"在所有网站上"。';
+  if (/读取超时/.test(m))
+    return '标注页没有响应（可能还在加载）：等页面加载一会儿再点「重新读取」。';
   if (/No tab with id|Frame with ID .* was removed|discarded/i.test(m))
     return '标签页已被 Edge 休眠或刚关闭：切到任意一个标注页让它加载完，再点「重新读取」。';
   return '无法读取页面（Edge 原始报错：' + m + '）';
@@ -37,15 +39,21 @@ async function getToken(tabs) {
   const { lwToken } = await chrome.storage.session.get('lwToken');
   if (lwToken && (!lwToken.exp || lwToken.exp > now + 60)) return { token: lwToken.token };
   let err = '所有标注页里都没找到有效的登录令牌：请在任意标注页重新登录或刷新，再点「重新读取」。';
-  // 先试没休眠的标签页
-  for (const tab of [...tabs].sort((a, b) => (a.discarded ? 1 : 0) - (b.discarded ? 1 : 0))) {
-    try {
-      const [g] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken });
-      const t = g && g.result;
-      if (t && (!t.exp || t.exp > now + 60)) { await chrome.storage.session.set({ lwToken: t }); return { token: t.token }; }
-    } catch (e) { err = explainErr(e && e.message ? e.message : String(e)); }
-  }
-  return { token: '', err };
+  // 所有标签页同时读，不等页面加载完（injectImmediately），每页最多等 3 秒，谁先读到有效令牌就用谁。
+  // 一个个按顺序读的话，开了几十个还在加载的标注页时会卡在第一个页面上
+  const read = (tab) => Promise.race([
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken, injectImmediately: true }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('读取超时')), 3000)),
+  ]).then(([g]) => {
+    const t = g && g.result;
+    if (t && (!t.exp || t.exp > now + 60)) return t;
+    throw new Error('该页没有有效令牌');
+  }, (e) => { err = explainErr(e && e.message ? e.message : String(e)); throw e; });
+  try {
+    const t = await Promise.any(tabs.filter((t) => !t.discarded).concat(tabs.filter((t) => t.discarded)).map(read));
+    await chrome.storage.session.set({ lwToken: t });
+    return { token: t.token };
+  } catch (e) { return { token: '', err }; }
 }
 
 // 任务详情接口：GET /api/v1/task/{task}，返回里的 total_frame_count 就是总帧数

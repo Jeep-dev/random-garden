@@ -112,15 +112,20 @@ async function getToken(tabIds) {
   const { bsToken } = await chrome.storage.session.get('bsToken');
   if (bsToken && (!bsToken.exp || bsToken.exp > now + 60)) return bsToken.token;
   const tabs = (await Promise.all(tabIds.map(id => chrome.tabs.get(id).catch(() => null)))).filter(Boolean);
-  tabs.sort((a, b) => (a.discarded ? 1 : 0) - (b.discarded ? 1 : 0));
-  for (const tab of tabs) {
-    try {
-      const [g] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken });
-      const t = g && g.result;
-      if (t && (!t.exp || t.exp > now + 60)) { await chrome.storage.session.set({ bsToken: t }); return t.token; }
-    } catch { /* 换下一个标签页 */ }
-  }
-  return '';
+  // 所有任务页同时读,不等页面加载完(injectImmediately),每页最多等 3 秒,谁先读到有效令牌就用谁
+  const read = tab => Promise.race([
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken, injectImmediately: true }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+  ]).then(([g]) => {
+    const t = g && g.result;
+    if (t && (!t.exp || t.exp > now + 60)) return t;
+    throw new Error('no token');
+  });
+  try {
+    const t = await Promise.any(tabs.filter(t => !t.discarded).concat(tabs.filter(t => t.discarded)).map(read));
+    await chrome.storage.session.set({ bsToken: t });
+    return t.token;
+  } catch { return ''; }
 }
 
 /* ---------- 接口 ---------- */
