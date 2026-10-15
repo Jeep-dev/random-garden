@@ -1,7 +1,7 @@
 // 不依赖工具栏小窗口的入口：右键扩展图标的菜单 + 快捷键。
 // 右键菜单由浏览器自己绘制，小窗口弹不出来时也能用。
+// （休眠标注页的功能已移到单独的「标注页休眠」扩展 tab-sleeper）
 
-const isLW = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && x.searchParams.has('data_id'); } catch (e) { return false; } };
 const RESULT_URL = chrome.runtime.getURL('popup.html?tab=1');
 
 // 让扩展进程一直在：每 30 秒唤醒一次后台。点图标时就不用再临时开进程，直接加载小窗口，
@@ -14,7 +14,6 @@ chrome.runtime.onInstalled.addListener(() => {
   keepWarm();
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: 'open-tab', title: '在新标签页打开采集结果（Alt+Shift+L）', contexts: ['action'] });
-    chrome.contextMenus.create({ id: 'discard', title: '休眠所有标注页（释放内存）', contexts: ['action'] });
   });
 });
 
@@ -30,20 +29,7 @@ async function openResultTab() {
   }
 }
 
-// 休眠除当前标签页以外的所有标注页。休眠的页面还留在标签栏上，点一下会重新加载；
-// 采集只用网址，休眠的页面照样能读
-async function discardAll() {
-  const tabs = (await chrome.tabs.query({})).filter((t) => isLW(t.url) && !t.active && !t.discarded);
-  let n = 0;
-  for (const t of tabs) { try { await chrome.tabs.discard(t.id); n++; } catch (e) { /* 正在播放声音等情况会拒绝，跳过 */ } }
-  chrome.action.setBadgeBackgroundColor({ color: '#15803d' });
-  chrome.action.setBadgeText({ text: String(n) });
-  setTimeout(() => chrome.action.setBadgeText({ text: '' }), 5000);
-  return n;
-}
-
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === 'open-tab') openResultTab();
-  if (info.menuItemId === 'discard') discardAll();
 });
 chrome.commands.onCommand.addListener((cmd) => { if (cmd === 'open-tab') openResultTab(); });
