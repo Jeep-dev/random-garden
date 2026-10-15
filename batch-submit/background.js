@@ -106,10 +106,11 @@ function findToken() {
   return best;
 }
 
-// 令牌只存在浏览器会话里,有效期内复用;依次在任务页里找,休眠的标签页排在最后
+// 令牌存在本机扩展里,有效期内一直复用(浏览器重启也不用重新读),页面一个都没加载出来也能用;
+// 过期或被平台拒绝(401/403)时才重新从任务页读取
 async function getToken(tabIds) {
   const now = Date.now() / 1000;
-  const { bsToken } = await chrome.storage.session.get('bsToken');
+  const { bsToken } = await chrome.storage.local.get('bsToken');
   if (bsToken && (!bsToken.exp || bsToken.exp > now + 60)) return bsToken.token;
   const tabs = (await Promise.all(tabIds.map(id => chrome.tabs.get(id).catch(() => null)))).filter(Boolean);
   // 所有任务页同时读,不等页面加载完(injectImmediately),每页最多等 3 秒,谁先读到有效令牌就用谁
@@ -123,7 +124,7 @@ async function getToken(tabIds) {
   });
   try {
     const t = await Promise.any(tabs.filter(t => !t.discarded).concat(tabs.filter(t => t.discarded)).map(read));
-    await chrome.storage.session.set({ bsToken: t });
+    await chrome.storage.local.set({ bsToken: t });
     return t.token;
   } catch { return ''; }
 }
@@ -162,7 +163,7 @@ async function api(origin, token, method, path, data) {
   let body = text;
   try { body = text ? JSON.parse(text) : null; } catch { /* 不是 JSON 就保留原文 */ }
   if (r.status === 401 || r.status === 403) {
-    await chrome.storage.session.remove('bsToken');
+    await chrome.storage.local.remove('bsToken');
     throw new ApiError('登录令牌失效或无权限(' + r.status + '),请刷新任意任务页后重试', r.status);
   }
   if (!r.ok) throw new ApiError('接口返回 ' + r.status + (serverMsg(body) ? ':' + serverMsg(body) : ''), r.status);

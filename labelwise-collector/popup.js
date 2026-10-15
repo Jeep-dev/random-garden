@@ -33,10 +33,11 @@ function explainErr(m) {
   return '无法读取页面（Edge 原始报错：' + m + '）';
 }
 
-// 令牌只存在浏览器会话里（关掉浏览器即清空），有效期内所有标签页共用，标签页休眠也不影响
+// 令牌存在本机扩展里，有效期内一直复用（浏览器重启也不用重新读），页面一个都没加载出来也能用；
+// 过期或被平台拒绝（401/403）时才重新从标注页读取
 async function getToken(tabs) {
   const now = Date.now() / 1000;
-  const { lwToken } = await chrome.storage.session.get('lwToken');
+  const { lwToken } = await chrome.storage.local.get('lwToken');
   if (lwToken && (!lwToken.exp || lwToken.exp > now + 60)) return { token: lwToken.token };
   let err = '所有标注页里都没找到有效的登录令牌：请在任意标注页重新登录或刷新，再点「重新读取」。';
   // 所有标签页同时读，不等页面加载完（injectImmediately），每页最多等 3 秒，谁先读到有效令牌就用谁。
@@ -51,7 +52,7 @@ async function getToken(tabs) {
   }, (e) => { err = explainErr(e && e.message ? e.message : String(e)); throw e; });
   try {
     const t = await Promise.any(tabs.filter((t) => !t.discarded).concat(tabs.filter((t) => t.discarded)).map(read));
-    await chrome.storage.session.set({ lwToken: t });
+    await chrome.storage.local.set({ lwToken: t });
     return { token: t.token };
   } catch (e) { return { token: '', err }; }
 }
@@ -61,7 +62,7 @@ async function fetchFrames(origin, task, token) {
   const r = await fetch(`${origin}/api/v1/task/${encodeURIComponent(task)}`, {
     headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
   });
-  if (r.status === 401 || r.status === 403) { await chrome.storage.session.remove('lwToken'); throw new Error('登录令牌失效，请点「重新读取」'); }
+  if (r.status === 401 || r.status === 403) { await chrome.storage.local.remove('lwToken'); throw new Error('登录令牌失效，请点「重新读取」'); }
   if (!r.ok) throw new Error('接口返回 ' + r.status);
   const j = await r.json();
   const o = j && j.data && typeof j.data === 'object' ? j.data : j;
