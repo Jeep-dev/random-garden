@@ -52,9 +52,54 @@ async function grabAuto(doOpen) {
   return { ...p, closed };
 }
 
+// 从页面的 localStorage / sessionStorage / cookie 里找登录令牌（JWT），取过期时间最晚的那个
+function findToken() {
+  const re = /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
+  const texts = [document.cookie];
+  for (const s of [localStorage, sessionStorage]) {
+    try { for (let i = 0; i < s.length; i++) texts.push(s.getItem(s.key(i)) || ''); } catch (e) { /* 忽略 */ }
+  }
+  let best = null;
+  for (const t of texts) for (const tok of t.match(re) || []) {
+    let exp = 0;
+    try { exp = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp || 0; } catch (e) { continue; }
+    if (!best || exp > best.exp) best = { token: tok, exp };
+  }
+  return best;
+}
+
 // ============================ 弹窗逻辑 ============================
 
 let rows = [];
+
+// 令牌只存在浏览器会话里（关掉浏览器即清空），有效期内所有标签页共用，标签页休眠也不影响
+async function getToken(tabs) {
+  const now = Date.now() / 1000;
+  const { lwToken } = await chrome.storage.session.get('lwToken');
+  if (lwToken && (!lwToken.exp || lwToken.exp > now + 60)) return lwToken.token;
+  // 先试没休眠的标签页
+  for (const tab of [...tabs].sort((a, b) => (a.discarded ? 1 : 0) - (b.discarded ? 1 : 0))) {
+    try {
+      const [g] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: findToken });
+      const t = g && g.result;
+      if (t && (!t.exp || t.exp > now + 60)) { await chrome.storage.session.set({ lwToken: t }); return t.token; }
+    } catch (e) { /* 换下一个标签页 */ }
+  }
+  return '';
+}
+
+// 直接请求任务详情接口：GET /api/v1/task/{task}，返回里的 total_frame_count 就是总帧数
+async function fetchTask(origin, task, token) {
+  const r = await fetch(`${origin}/api/v1/task/${encodeURIComponent(task)}`, {
+    headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
+  });
+  if (r.status === 401 || r.status === 403) { await chrome.storage.session.remove('lwToken'); throw new Error('登录令牌失效'); }
+  if (!r.ok) throw new Error('接口返回 ' + r.status);
+  const j = await r.json();
+  const o = j && j.data && typeof j.data === 'object' ? j.data : j;
+  if (o.total_frame_count == null) throw new Error('接口返回里没有 total_frame_count');
+  return { frames: String(o.total_frame_count), task: o.task_name || o.name || '' };
+}
 
 // 把 Edge 返回的英文报错翻译成：原因 + 怎么办
 function explainErr(m) {
@@ -77,10 +122,20 @@ async function collect(auto) {
   const cache = await chrome.storage.local.get(null);
   // 所有标签页同时读取，结果仍按标签页从左到右排列
   const tabs = await lwTabs();
+  const token = await getToken(tabs);
   const res = await Promise.all(tabs.map(async (tab) => {
-    const q = new URL(tab.url).searchParams;
+    const u = new URL(tab.url), q = u.searchParams;
     const cached = cache['f_' + q.get('data_id')];
     let live = null, err = '';
+    // 优先走接口：不点页面、不等弹窗，休眠的标签页也能读
+    if (token && q.get('task')) {
+      try {
+        const a = await fetchTask(u.origin, q.get('task'), token);
+        chrome.storage.local.set({ ['f_' + q.get('data_id')]: a.frames });
+        return { frames: a.frames, dataId: q.get('data_id'), task: q.get('task_name') || a.task, url: tab.url, err: '' };
+      } catch (e) { err = '接口读取失败（' + e.message + '），改用页面读取'; }
+    }
+    // 接口不可用时退回原来的点开弹窗读取
     try {
       const [g] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: grabAuto, args: [auto && !cached] });
       live = g && g.result;
