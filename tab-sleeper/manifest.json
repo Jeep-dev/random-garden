@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "标注页休眠",
+  "version": "1.0.0",
+  "description": "点一下图标，立刻休眠所有 LabelWise 标注页（当前页除外），释放内存；可设置自动休眠",
+  "permissions": [
+    "tabs",
+    "contextMenus",
+    "alarms",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "点击：休眠所有标注页（当前页除外）｜右键：自动休眠设置"
+  }
+}

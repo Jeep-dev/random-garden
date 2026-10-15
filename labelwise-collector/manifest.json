@@ -1,29 +1,29 @@
 {
   "manifest_version": 3,
   "name": "LabelWise 任务信息采集",
-  "version": "1.8.2",
+  "version": "2.2.0",
   "description": "一键提取所有 LabelWise 标签页的 总帧数 / data_id / 任务名称 / 页面URL，复制后直接粘贴到 WPS 表格",
   "permissions": [
     "tabs",
     "scripting",
-    "storage"
+    "storage",
+    "contextMenus",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
-    "default_title": "采集 LabelWise 标签页",
+    "default_title": "采集 LabelWise 标签页（弹不出来时：右键图标 → 在新标签页打开）",
     "default_popup": "popup.html"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle"
+  "commands": {
+    "open-tab": {
+      "suggested_key": { "default": "Alt+Shift+L" },
+      "description": "在新标签页打开采集结果"
     }
-  ]
+  }
 }

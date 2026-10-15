@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "批量提交助手",
-  "version": "0.3.3",
-  "description": "在标注平台的多个任务标签页中批量执行提交流程:提交 → 选择「质检通过」→ 确认提交 → 返回主页",
+  "version": "0.4.3",
+  "description": "在标注平台的多个任务标签页中批量以「质检通过」提交（直接调用平台接口，不需要等页面加载）",
   "minimum_chrome_version": "102",
   "permissions": ["scripting", "storage"],
   "host_permissions": ["<all_urls>"],
