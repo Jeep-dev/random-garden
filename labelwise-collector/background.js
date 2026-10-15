@@ -4,7 +4,14 @@
 const isLW = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && x.searchParams.has('data_id'); } catch (e) { return false; } };
 const RESULT_URL = chrome.runtime.getURL('popup.html?tab=1');
 
+// 让扩展进程一直在：每 30 秒唤醒一次后台。点图标时就不用再临时开进程，直接加载小窗口，
+// 开着很多重页面、内存紧张时，临时开进程是最慢的一步
+const keepWarm = () => chrome.alarms.create('keep-warm', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener(() => { /* 唤醒本身就够了 */ });
+chrome.runtime.onStartup.addListener(keepWarm);
+
 chrome.runtime.onInstalled.addListener(() => {
+  keepWarm();
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: 'open-tab', title: '在新标签页打开采集结果（Alt+Shift+L）', contexts: ['action'] });
     chrome.contextMenus.create({ id: 'discard', title: '休眠所有标注页（释放内存）', contexts: ['action'] });
