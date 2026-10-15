@@ -1,6 +1,8 @@
 // 不限域名：只要是 http(s) 页面且网址里带 data_id 参数就算标注页
 const isLW = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && x.searchParams.has('data_id'); } catch (e) { return false; } };
 const $ = (id) => document.getElementById(id);
+// 在标签页里打开时（右键菜单 / 快捷键）换成宽版布局
+if (location.search.includes('tab=1')) document.documentElement.className = 'tab';
 
 // 注入页面执行（必须自包含）：从 localStorage / sessionStorage / cookie 里找登录令牌（JWT），取过期时间最晚的那个
 function findToken() {
