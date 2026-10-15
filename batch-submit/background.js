@@ -8,6 +8,7 @@
 //   3. GET  /api/v1/task/data/{task}                     取 labeling_data(质检时只读,原样提交)
 //   4. POST /api/v1/task/submit                          { action, task_id, labeling_data, skip_acceptance_for_unmodified_tasks:false }
 //   5. GET  /api/v1/task/{task}                          复查:环节或状态变了才算成功
+//   6. 成功后关掉任务标签页、刷新已打开的主页(和手动点「返回主页领取新任务」一样)
 //
 // 消息约定
 //   popup → 后台  { type:'START', options:{dryRun, concurrency}, tabs:[{id,title,url}] }   开始
@@ -21,7 +22,7 @@ const CFG = {
   ACTION_NAME: '质检通过',                 // 要执行的操作名(和页面下拉框里的文字一致)
   NODE_TYPE: 'quality_inspection',         // 只处理这个环节的任务
   WORKING: 'Working',                      // 只处理这个状态的任务,其他状态(比如已提交)跳过
-  HOME_PATH: '/operator/home',             // 提交成功后标签页跳到这里
+  HOME_PATH: '/operator/home',             // 主页路径:提交成功后刷新这个页面
   REQUEST_TIMEOUT_MS: 30 * 1000,
 };
 const MAX_CONSECUTIVE_FAILS = 3;            // 连续失败这么多个就整体停下
@@ -186,6 +187,35 @@ function findAction(origin, token, wf, node) {
   return actionCache.get(key);
 }
 
+/* ---------- 主页 ---------- */
+
+const homeUrl = origin => origin + CFG.HOME_PATH;
+async function homeTabs(origin) {
+  return (await chrome.tabs.query({})).filter(t => {
+    try { const u = new URL(t.url); return u.origin === origin && u.pathname.startsWith(CFG.HOME_PATH); } catch { return false; }
+  });
+}
+
+// 刷新主页。批量提交时成功会接连发生,1.5 秒内的多次合并成一次,免得主页一直闪
+const homeTimers = new Map();
+function refreshHome(origin) {
+  clearTimeout(homeTimers.get(origin));
+  homeTimers.set(origin, setTimeout(async () => {
+    homeTimers.delete(origin);
+    const tabs = await homeTabs(origin);
+    if (tabs.length) for (const t of tabs) chrome.tabs.reload(t.id).catch(() => {});
+    else chrome.tabs.create({ url: homeUrl(origin), active: false }).catch(() => {}); // 没开主页才新开一个
+  }, 1500));
+}
+
+// 运行结束后切到主页标签页
+async function focusHome(origin) {
+  const [t] = await homeTabs(origin);
+  if (!t) return;
+  await chrome.tabs.update(t.id, { active: true }).catch(() => {});
+  await chrome.windows.update(t.windowId, { focused: true }).catch(() => {});
+}
+
 /* ---------- 处理单个任务 ---------- */
 
 async function processItem(item, options, token) {
@@ -242,7 +272,9 @@ async function processItem(item, options, token) {
   const moved = after && (after.workflow_node_id !== before.workflow_node_id || after.status !== before.status);
 
   if (moved) {
-    chrome.tabs.update(item.tabId, { url: origin + CFG.HOME_PATH }).catch(() => {});
+    // 和手动点「返回主页领取新任务」一样:关掉任务标签页,刷新已打开的主页
+    chrome.tabs.remove(item.tabId).catch(() => {});
+    refreshHome(origin);
     return setItem(item, { status: 'success', message: submitErr ? '提交成功(提交请求报错但任务已流转:' + submitErr.message + ')' : '提交成功' });
   }
   // 服务器明确拒绝(4xx)且任务没动 = 没提交上
@@ -307,6 +339,10 @@ async function startRun({ options, tabs }) {
   run.note = stopReason;
   stopKeepAlive();
   await save();
+
+  // 有提交成功的,等最后一次主页刷新排上后切到主页
+  const ok = items.find(it => it.status === 'success');
+  if (ok) { try { setTimeout(() => focusHome(new URL(ok.url).origin), 1600); } catch { /* 忽略 */ } }
 }
 
 /* ---------- 消息入口 ---------- */
